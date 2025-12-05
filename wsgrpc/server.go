@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -18,14 +19,24 @@ import (
 
 // methodInfo stores the handler and service implementation for a method
 type methodInfo struct {
-	handler grpc.MethodDesc
-	srv     interface{}
+	unaryHandler  *grpc.MethodDesc
+	streamHandler *grpc.StreamDesc
+	srv           interface{}
+}
+
+// ServerOption configures server behavior
+type ServerOption struct {
+	// InsecureSkipVerify disables origin checking (development only)
+	InsecureSkipVerify bool
+	// MaxPayloadSize sets the maximum frame payload size (default 4MB)
+	MaxPayloadSize uint32
 }
 
 // Server represents a WebSocket-based gRPC server
 type Server struct {
 	mu      sync.RWMutex
 	methods map[string]*methodInfo // method path -> method info
+	options ServerOption
 }
 
 // wsConnection manages a single WebSocket connection and its streams
@@ -41,15 +52,25 @@ type wsConnection struct {
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
 type WebSocketServerStream struct {
-	ctx        context.Context
-	conn       *wsConnection
-	streamID   uint32
-	recvChan   chan []byte
-	method     string
-	headerMu   sync.Mutex
-	header     metadata.MD
-	headerSent bool
-	trailer    metadata.MD
+	ctx          context.Context
+	cancel       context.CancelFunc // Stream-specific cancel function for RST_STREAM handling
+	conn         *wsConnection
+	streamID     uint32
+	recvChan     chan []byte
+	method       string
+	headerMu     sync.Mutex
+	header       metadata.MD
+	headerSent   bool
+	trailer      metadata.MD
+	lastActivity time.Time // Last time this stream had activity (for idle timeout)
+	activityMu   sync.Mutex
+}
+
+// updateActivity updates the last activity timestamp for idle timeout tracking
+func (s *WebSocketServerStream) updateActivity() {
+	s.activityMu.Lock()
+	s.lastActivity = time.Now()
+	s.activityMu.Unlock()
 }
 
 // SetHeader implements grpc.ServerStream
@@ -57,20 +78,20 @@ type WebSocketServerStream struct {
 func (s *WebSocketServerStream) SetHeader(md metadata.MD) error {
 	s.headerMu.Lock()
 	defer s.headerMu.Unlock()
-	
+
 	if s.headerSent {
 		return fmt.Errorf("headers already sent")
 	}
-	
+
 	if s.header == nil {
 		s.header = metadata.MD{}
 	}
-	
+
 	// Merge metadata
 	for k, v := range md {
 		s.header[k] = append(s.header[k], v...)
 	}
-	
+
 	return nil
 }
 
@@ -79,20 +100,20 @@ func (s *WebSocketServerStream) SetHeader(md metadata.MD) error {
 func (s *WebSocketServerStream) SendHeader(md metadata.MD) error {
 	s.headerMu.Lock()
 	defer s.headerMu.Unlock()
-	
+
 	if s.headerSent {
 		return fmt.Errorf("headers already sent")
 	}
-	
+
 	// Merge with any previously set headers
 	if s.header == nil {
 		s.header = metadata.MD{}
 	}
-	
+
 	for k, v := range md {
 		s.header[k] = append(s.header[k], v...)
 	}
-	
+
 	// Serialize headers to frame payload
 	var headerLines []string
 	for k, values := range s.header {
@@ -100,15 +121,15 @@ func (s *WebSocketServerStream) SendHeader(md metadata.MD) error {
 			headerLines = append(headerLines, fmt.Sprintf("%s: %s", k, v))
 		}
 	}
-	
+
 	headersPayload := []byte(strings.Join(headerLines, "\n"))
 	headersFrame := encodeFrame(s.streamID, FlagHEADERS, headersPayload)
-	
+
 	err := s.conn.send(headersFrame)
 	if err != nil {
 		return fmt.Errorf("failed to send headers: %w", err)
 	}
-	
+
 	s.headerSent = true
 	log.Printf("[wsgrpc] Sent HEADERS frame for stream %d", s.streamID)
 	return nil
@@ -119,11 +140,11 @@ func (s *WebSocketServerStream) SendHeader(md metadata.MD) error {
 func (s *WebSocketServerStream) SetTrailer(md metadata.MD) {
 	s.headerMu.Lock()
 	defer s.headerMu.Unlock()
-	
+
 	if s.trailer == nil {
 		s.trailer = metadata.MD{}
 	}
-	
+
 	// Merge metadata
 	for k, v := range md {
 		s.trailer[k] = append(s.trailer[k], v...)
@@ -137,6 +158,9 @@ func (s *WebSocketServerStream) Context() context.Context {
 
 // SendMsg implements grpc.ServerStream - sends a message to the client
 func (s *WebSocketServerStream) SendMsg(m interface{}) error {
+	// Update activity timestamp
+	s.updateActivity()
+
 	// Marshal the protobuf message
 	msg, ok := m.(proto.Message)
 	if !ok {
@@ -150,7 +174,7 @@ func (s *WebSocketServerStream) SendMsg(m interface{}) error {
 
 	// Encode and send DATA frame
 	frame := encodeFrame(s.streamID, FlagDATA, data)
-	
+
 	err = s.conn.send(frame)
 	if err != nil {
 		return fmt.Errorf("failed to send frame: %w", err)
@@ -168,6 +192,9 @@ func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
 		if !ok {
 			return io.EOF
 		}
+
+		// Update activity timestamp
+		s.updateActivity()
 
 		// Unmarshal into the provided message
 		msg, ok := m.(proto.Message)
@@ -217,6 +244,52 @@ func (c *wsConnection) writerLoop() {
 	}
 }
 
+// idleTimeoutMonitor periodically checks for idle streams and closes them
+// Per PROTOCOL.md Section 10.3: "Streams with no activity for 5 minutes SHOULD be closed by the server"
+func (c *wsConnection) idleTimeoutMonitor() {
+	ticker := time.NewTicker(1 * time.Minute) // Check every minute
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.checkIdleStreams()
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// checkIdleStreams checks all streams and closes those idle for more than 5 minutes
+func (c *wsConnection) checkIdleStreams() {
+	const idleTimeout = 5 * time.Minute
+	now := time.Now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for streamID, stream := range c.streamMap {
+		stream.activityMu.Lock()
+		idleDuration := now.Sub(stream.lastActivity)
+		stream.activityMu.Unlock()
+
+		if idleDuration > idleTimeout {
+			log.Printf("[wsgrpc] Stream %d idle for %v, closing due to timeout", streamID, idleDuration)
+			
+			// Cancel the stream's context
+			if stream.cancel != nil {
+				stream.cancel()
+			}
+			
+			// Close the receive channel to unblock any pending RecvMsg
+			close(stream.recvChan)
+			
+			// Remove from stream map
+			delete(c.streamMap, streamID)
+		}
+	}
+}
+
 // Close closes the connection and cleans up resources
 func (c *wsConnection) Close() {
 	if c.cancel != nil {
@@ -225,10 +298,22 @@ func (c *wsConnection) Close() {
 	close(c.sendChan)
 }
 
-// NewServer creates a new wsgrpc server
-func NewServer() *Server {
+// NewServer creates a new wsgrpc server with optional configuration
+func NewServer(opts ...ServerOption) *Server {
+	// Default options
+	options := ServerOption{
+		InsecureSkipVerify: false, // Secure by default
+		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
+	}
+	
+	// Apply provided options
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	
 	return &Server{
 		methods: make(map[string]*methodInfo),
+		options: options,
 	}
 }
 
@@ -237,14 +322,26 @@ func (s *Server) RegisterService(sd *grpc.ServiceDesc, ss interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Register unary methods
 	for i := range sd.Methods {
 		method := sd.Methods[i]
 		methodPath := "/" + sd.ServiceName + "/" + method.MethodName
 		s.methods[methodPath] = &methodInfo{
-			handler: method,
-			srv:     ss,
+			unaryHandler: &method,
+			srv:          ss,
 		}
-		log.Printf("[wsgrpc] Registered method: %s", methodPath)
+		log.Printf("[wsgrpc] Registered unary method: %s", methodPath)
+	}
+
+	// Register streaming methods
+	for i := range sd.Streams {
+		stream := sd.Streams[i]
+		methodPath := "/" + sd.ServiceName + "/" + stream.StreamName
+		s.methods[methodPath] = &methodInfo{
+			streamHandler: &stream,
+			srv:           ss,
+		}
+		log.Printf("[wsgrpc] Registered streaming method: %s", methodPath)
 	}
 }
 
@@ -254,7 +351,7 @@ func (s *Server) RegisterService(sd *grpc.ServiceDesc, ss interface{}) {
 func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Accept the WebSocket connection
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // For development; configure properly in production
+		InsecureSkipVerify: s.options.InsecureSkipVerify,
 	})
 	if err != nil {
 		log.Printf("[wsgrpc] Failed to accept WebSocket connection: %v", err)
@@ -279,7 +376,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) error {
 	// Create cancellable context for the connection
 	connCtx, cancel := context.WithCancel(ctx)
-	
+
 	// Create connection state with actor pattern
 	wsConn := &wsConnection{
 		conn:      conn,
@@ -288,10 +385,13 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		sendChan:  make(chan []byte, 100), // Buffered channel to reduce blocking
 		streamMap: make(map[uint32]*WebSocketServerStream),
 	}
-	
+
 	// Start the writer goroutine (actor pattern)
 	go wsConn.writerLoop()
-	
+
+	// Start the idle timeout monitor goroutine
+	go wsConn.idleTimeoutMonitor()
+
 	// Ensure cleanup on exit
 	defer wsConn.Close()
 
@@ -309,7 +409,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		}
 
 		// Decode the frame
-		frame, err := decodeFrame(data)
+		frame, err := decodeFrame(data, s.options.MaxPayloadSize)
 		if err != nil {
 			log.Printf("[wsgrpc] Frame decoding error: %v", err)
 			continue
@@ -337,26 +437,26 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		if frame.Flags&FlagHEADERS != 0 {
 			// New stream - parse headers (method path and metadata)
 			headersText := string(frame.Payload)
-			
+
 			// Parse headers to extract method path and metadata
 			md := metadata.New(nil)
 			var methodPath string
-			
+
 			// Split by newlines and parse each line
 			for _, line := range splitLines(headersText) {
 				if len(line) == 0 {
 					continue
 				}
-				
+
 				// Split on first colon
 				idx := findFirstColon(line)
 				if idx == -1 {
 					continue
 				}
-				
+
 				key := trimSpace(line[:idx])
 				value := trimSpace(line[idx+1:])
-				
+
 				if key == "path" {
 					methodPath = value
 				} else {
@@ -364,7 +464,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 					md.Append(key, value)
 				}
 			}
-			
+
 			log.Printf("[wsgrpc] New stream %d for method: %s", frame.StreamID, methodPath)
 
 			// Look up the method handler
@@ -383,14 +483,20 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			// Create context with metadata derived from connection context
 			// This ensures cancellation propagates when connection closes
 			streamCtx := metadata.NewIncomingContext(wsConn.ctx, md)
+			
+			// Create cancellable context for this specific stream
+			// This allows individual stream cancellation via RST_STREAM
+			streamCtx, streamCancel := context.WithCancel(streamCtx)
 
 			// Create stream
 			stream := &WebSocketServerStream{
-				ctx:      streamCtx,
-				conn:     wsConn,
-				streamID: frame.StreamID,
-				recvChan: make(chan []byte, 10),
-				method:   methodPath,
+				ctx:          streamCtx,
+				cancel:       streamCancel,
+				conn:         wsConn,
+				streamID:     frame.StreamID,
+				recvChan:     make(chan []byte, 10),
+				method:       methodPath,
+				lastActivity: time.Now(),
 			}
 
 			wsConn.streamMap[frame.StreamID] = stream
@@ -413,20 +519,46 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			if frame.Flags&FlagEOS != 0 {
 				close(stream.recvChan)
 			}
+		} else if frame.Flags&FlagRST_STREAM != 0 {
+			// RST_STREAM frame - client is cancelling the stream
+			wsConn.mu.Lock()
+			stream, ok := wsConn.streamMap[frame.StreamID]
+			if ok {
+				log.Printf("[wsgrpc] Stream %d context cancelled by RST_STREAM", frame.StreamID)
+				// Cancel the stream's context to stop the handler
+				if stream.cancel != nil {
+					stream.cancel()
+				}
+				// Close the receive channel to unblock any pending RecvMsg
+				close(stream.recvChan)
+				// Remove from stream map
+				delete(wsConn.streamMap, frame.StreamID)
+			} else {
+				log.Printf("[wsgrpc] Stream %d not found for RST_STREAM frame", frame.StreamID)
+			}
+			wsConn.mu.Unlock()
 		}
 	}
 }
 
 // handleStream invokes the gRPC method handler
 func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodInfo) {
-	// Create a decoder function that reads from the stream
-	dec := func(m interface{}) error {
-		return stream.RecvMsg(m)
+	var err error
+
+	// Invoke the appropriate handler based on method type
+	if methodInfo.unaryHandler != nil {
+		// Unary method handler
+		dec := func(m interface{}) error {
+			return stream.RecvMsg(m)
+		}
+		_, err = methodInfo.unaryHandler.Handler(methodInfo.srv, stream.ctx, dec, nil)
+	} else if methodInfo.streamHandler != nil {
+		// Streaming method handler
+		err = methodInfo.streamHandler.Handler(methodInfo.srv, stream)
+	} else {
+		err = fmt.Errorf("no handler found for method")
 	}
 
-	// Invoke the handler
-	_, err := methodInfo.handler.Handler(methodInfo.srv, stream.ctx, dec, nil)
-	
 	// Default status OK
 	statusCode := 0
 	statusMsg := "OK"
@@ -448,7 +580,7 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 	var trailerLines []string
 	trailerLines = append(trailerLines, fmt.Sprintf("grpc-status:%d", statusCode))
 	trailerLines = append(trailerLines, fmt.Sprintf("grpc-message:%s", statusMsg))
-	
+
 	// Add any custom trailer metadata set by the handler
 	stream.headerMu.Lock()
 	if stream.trailer != nil {
@@ -459,14 +591,14 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 		}
 	}
 	stream.headerMu.Unlock()
-	
+
 	trailersPayload := []byte(strings.Join(trailerLines, "\n"))
 	trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
-	
+
 	stream.conn.send(trailersFrame)
-	
+
 	log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, statusMsg)
-	
+
 	// Clean up stream from map
 	delete(stream.conn.streamMap, stream.streamID)
 }

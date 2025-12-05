@@ -1,1 +1,3 @@
 /.idea/
+/nggorpc-client/node_modules/
+/.output.txt

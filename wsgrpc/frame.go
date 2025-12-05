@@ -54,7 +54,7 @@ func encodeFrame(streamID uint32, flags uint8, payload []byte) []byte {
 //
 // Returns a Frame struct with parsed Flags, StreamID, and Payload.
 // Returns an error if the buffer is too small or malformed.
-func decodeFrame(data []byte) (*Frame, error) {
+func decodeFrame(data []byte, maxPayloadSize uint32) (*Frame, error) {
 	const headerSize = 9
 
 	if len(data) < headerSize {
@@ -70,8 +70,7 @@ func decodeFrame(data []byte) (*Frame, error) {
 	// Bytes 5-8: Length (uint32, Big Endian)
 	length := binary.BigEndian.Uint32(data[5:9])
 
-	// Enforce maximum payload size of 4MB per PROTOCOL.md
-	const maxPayloadSize = 4 * 1024 * 1024 // 4MB
+	// Enforce maximum payload size per server configuration
 	if length > maxPayloadSize {
 		return nil, fmt.Errorf(
 			"payload too large: %d bytes exceeds maximum of %d bytes",

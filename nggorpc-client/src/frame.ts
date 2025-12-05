@@ -64,11 +64,11 @@ export function encodeFrame(streamId: number, flags: number, payload: Uint8Array
 /**
  * Decodes a binary frame into its components.
  * 
- * @param buffer - The ArrayBuffer containing the frame data
+ * @param buffer - The ArrayBuffer or ArrayBufferLike containing the frame data
  * @returns A Frame object with parsed streamId, flags, and payload
  * @throws Error if the buffer is too small to contain a valid frame
  */
-export function decodeFrame(buffer: ArrayBuffer): Frame {
+export function decodeFrame(buffer: ArrayBufferLike): Frame {
   const headerSize = 9;
 
   if (buffer.byteLength < headerSize) {

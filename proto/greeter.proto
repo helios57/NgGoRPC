@@ -17,6 +17,9 @@ service Greeter {
   
   // Bidirectional streaming
   rpc SayHelloBidirectional (stream HelloRequest) returns (stream HelloResponse);
+  
+  // Infinite ticker for E2E testing (Server-side streaming)
+  rpc InfiniteTicker (Empty) returns (stream Tick);
 }
 
 // The request message containing the user's name
