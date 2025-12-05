@@ -209,12 +209,17 @@ const file_greeter_proto_rawDesc = "" +
 	"\fHelloRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\")\n" +
 	"\rHelloResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage2\x9c\x02\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\a\n" +
+	"\x05Empty\":\n" +
+	"\x04Tick\x12\x14\n" +
+	"\x05count\x18\x01 \x01(\x03R\x05count\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp2\xcf\x02\n" +
 	"\aGreeter\x129\n" +
 	"\bSayHello\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse\x12A\n" +
 	"\x0eSayHelloStream\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse0\x01\x12G\n" +
 	"\x14SayHelloClientStream\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse(\x01\x12J\n" +
-	"\x15SayHelloBidirectional\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse(\x010\x01B-Z+github.com/nggorpc/wsgrpc/generated/greeterb\x06proto3"
+	"\x15SayHelloBidirectional\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse(\x010\x01\x121\n" +
+	"\x0eInfiniteTicker\x12\x0e.greeter.Empty\x1a\r.greeter.Tick0\x01B-Z+github.com/nggorpc/wsgrpc/generated/greeterb\x06proto3"
 
 var (
 	file_greeter_proto_rawDescOnce sync.Once

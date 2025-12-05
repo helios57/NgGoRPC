@@ -30,13 +30,19 @@ type ServerOption struct {
 	InsecureSkipVerify bool
 	// MaxPayloadSize sets the maximum frame payload size (default 4MB)
 	MaxPayloadSize uint32
+	// IdleTimeout sets the duration after which idle streams are closed (default 5 minutes)
+	IdleTimeout time.Duration
+	// IdleCheckInterval sets how often to check for idle streams (default 1 minute)
+	IdleCheckInterval time.Duration
 }
 
 // Server represents a WebSocket-based gRPC server
 type Server struct {
-	mu      sync.RWMutex
-	methods map[string]*methodInfo // method path -> method info
-	options ServerOption
+	mu          sync.RWMutex
+	methods     map[string]*methodInfo // method path -> method info
+	options     ServerOption
+	connections map[*wsConnection]struct{} // Track active connections for graceful shutdown
+	shutdown    bool                       // Flag to indicate server is shutting down
 }
 
 // wsConnection manages a single WebSocket connection and its streams
@@ -48,6 +54,7 @@ type wsConnection struct {
 	mu           sync.Mutex
 	streamMap    map[uint32]*WebSocketServerStream
 	nextStreamID uint32
+	server       *Server // Reference to server for accessing options
 }
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
@@ -230,12 +237,15 @@ func (c *wsConnection) writerLoop() {
 		select {
 		case frame, ok := <-c.sendChan:
 			if !ok {
-				// Channel closed, exit writer loop
+				// Channel closed, cancel connection context to unblock read loop
+				log.Printf("[wsgrpc] Send channel closed, cancelling connection")
+				c.cancel()
 				return
 			}
 			// Write to WebSocket without mutex contention
 			if err := c.conn.Write(c.ctx, websocket.MessageBinary, frame); err != nil {
-				log.Printf("[wsgrpc] Write error in writer loop: %v", err)
+				log.Printf("[wsgrpc] Write error in writer loop: %v, cancelling connection", err)
+				c.cancel()
 				return
 			}
 		case <-c.ctx.Done():
@@ -247,7 +257,8 @@ func (c *wsConnection) writerLoop() {
 // idleTimeoutMonitor periodically checks for idle streams and closes them
 // Per PROTOCOL.md Section 10.3: "Streams with no activity for 5 minutes SHOULD be closed by the server"
 func (c *wsConnection) idleTimeoutMonitor() {
-	ticker := time.NewTicker(1 * time.Minute) // Check every minute
+	checkInterval := c.server.options.IdleCheckInterval
+	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 
 	for {
@@ -260,9 +271,9 @@ func (c *wsConnection) idleTimeoutMonitor() {
 	}
 }
 
-// checkIdleStreams checks all streams and closes those idle for more than 5 minutes
+// checkIdleStreams checks all streams and closes those idle for more than the configured timeout
 func (c *wsConnection) checkIdleStreams() {
-	const idleTimeout = 5 * time.Minute
+	idleTimeout := c.server.options.IdleTimeout
 	now := time.Now()
 
 	c.mu.Lock()
@@ -304,6 +315,8 @@ func NewServer(opts ...ServerOption) *Server {
 	options := ServerOption{
 		InsecureSkipVerify: false,           // Secure by default
 		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
+		IdleTimeout:        5 * time.Minute, // 5 minute default idle timeout
+		IdleCheckInterval:  1 * time.Minute, // 1 minute default check interval
 	}
 
 	// Apply provided options
@@ -312,8 +325,9 @@ func NewServer(opts ...ServerOption) *Server {
 	}
 
 	return &Server{
-		methods: make(map[string]*methodInfo),
-		options: options,
+		methods:     make(map[string]*methodInfo),
+		options:     options,
+		connections: make(map[*wsConnection]struct{}),
 	}
 }
 
@@ -374,6 +388,14 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 // handleConnection manages the lifecycle of a single WebSocket connection.
 // It runs a read loop that decodes incoming frames and processes them.
 func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) error {
+	// Check if server is shutting down
+	s.mu.RLock()
+	if s.shutdown {
+		s.mu.RUnlock()
+		return fmt.Errorf("server is shutting down")
+	}
+	s.mu.RUnlock()
+
 	// Create cancellable context for the connection
 	connCtx, cancel := context.WithCancel(ctx)
 
@@ -384,16 +406,28 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		cancel:    cancel,
 		sendChan:  make(chan []byte, 100), // Buffered channel to reduce blocking
 		streamMap: make(map[uint32]*WebSocketServerStream),
+		server:    s, // Reference to server for accessing options
 	}
+
+	// Register the connection
+	s.mu.Lock()
+	s.connections[wsConn] = struct{}{}
+	s.mu.Unlock()
+
+	// Ensure cleanup on exit
+	defer func() {
+		wsConn.Close()
+		// Unregister the connection
+		s.mu.Lock()
+		delete(s.connections, wsConn)
+		s.mu.Unlock()
+	}()
 
 	// Start the writer goroutine (actor pattern)
 	go wsConn.writerLoop()
 
 	// Start the idle timeout monitor goroutine
 	go wsConn.idleTimeoutMonitor()
-
-	// Ensure cleanup on exit
-	defer wsConn.Close()
 
 	for {
 		// Read a message from the WebSocket
@@ -608,6 +642,82 @@ func (s *Server) ListenAndServe(addr string) error {
 	http.HandleFunc("/", s.HandleWebSocket)
 	log.Printf("[wsgrpc] Server listening on %s", addr)
 	return http.ListenAndServe(addr, nil)
+}
+
+// Shutdown gracefully shuts down the server by signaling all active streams with RST_STREAM
+// and waiting for connections to close. It respects the provided context's deadline.
+func (s *Server) Shutdown(ctx context.Context) error {
+	log.Printf("[wsgrpc] Server shutdown initiated")
+
+	// Set shutdown flag to reject new connections
+	s.mu.Lock()
+	s.shutdown = true
+	connectionsCopy := make([]*wsConnection, 0, len(s.connections))
+	for conn := range s.connections {
+		connectionsCopy = append(connectionsCopy, conn)
+	}
+	s.mu.Unlock()
+
+	// Send RST_STREAM to all active streams on all connections
+	for _, conn := range connectionsCopy {
+		conn.mu.Lock()
+		for streamID, stream := range conn.streamMap {
+			log.Printf("[wsgrpc] Sending RST_STREAM to stream %d during shutdown", streamID)
+
+			// Build RST_STREAM frame with error code 0 (graceful shutdown)
+			rstPayload := make([]byte, 4)
+			// Error code 0 indicates graceful shutdown
+			rstPayload[0] = 0
+			rstPayload[1] = 0
+			rstPayload[2] = 0
+			rstPayload[3] = 0
+
+			rstFrame := encodeFrame(streamID, FlagRST_STREAM, rstPayload)
+
+			// Send RST_STREAM frame (non-blocking attempt)
+			select {
+			case conn.sendChan <- rstFrame:
+				// Frame queued successfully
+			case <-time.After(100 * time.Millisecond):
+				log.Printf("[wsgrpc] Timeout sending RST_STREAM for stream %d", streamID)
+			}
+
+			// Cancel the stream's context
+			if stream.cancel != nil {
+				stream.cancel()
+			}
+		}
+		conn.mu.Unlock()
+
+		// Give the writer loop time to send queued RST_STREAM frames
+		time.Sleep(200 * time.Millisecond)
+
+		// Cancel the connection context to trigger cleanup
+		conn.cancel()
+	}
+
+	// Wait for all connections to clean up or context to expire
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		s.mu.RLock()
+		remaining := len(s.connections)
+		s.mu.RUnlock()
+
+		if remaining == 0 {
+			log.Printf("[wsgrpc] All connections closed, shutdown complete")
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Printf("[wsgrpc] Shutdown context expired with %d connections remaining", remaining)
+			return ctx.Err()
+		case <-ticker.C:
+			// Continue waiting
+		}
+	}
 }
 
 // Helper functions for parsing headers

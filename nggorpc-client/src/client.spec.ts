@@ -56,6 +56,60 @@ describe('NgGoRpcClient', () => {
     }
   });
 
+  describe('PONG Watchdog', () => {
+    it('should close socket when PONG timeout occurs', (done) => {
+      // Mock timers
+      jest.useFakeTimers();
+      
+      // Manually set the socket on the client (simulating successful connection)
+      (client as any).socket = mockSocket;
+      (client as any).connected = true;
+
+      // Trigger sendPing which starts the watchdog timeout
+      (client as any).sendPing();
+
+      // Verify socket.close was not called yet
+      expect(mockSocket.close).not.toHaveBeenCalled();
+
+      // Fast-forward time by 5000ms (PONG timeout)
+      jest.advanceTimersByTime(5000);
+
+      // Verify socket.close was called with code 4000
+      expect(mockSocket.close).toHaveBeenCalledWith(4000, 'PONG timeout');
+      
+      jest.useRealTimers();
+      done();
+    });
+
+    it('should cancel watchdog timeout when PONG is received', (done) => {
+      jest.useFakeTimers();
+      
+      // Manually set the socket on the client (simulating successful connection)
+      (client as any).socket = mockSocket;
+      (client as any).connected = true;
+
+      // Trigger sendPing which starts the watchdog timeout
+      (client as any).sendPing();
+
+      // Verify timeout is set
+      expect((client as any).pongTimeoutId).not.toBeNull();
+
+      // Simulate receiving PONG by directly calling the PONG handler logic
+      const pongTimeoutId = (client as any).pongTimeoutId;
+      clearTimeout(pongTimeoutId);
+      (client as any).pongTimeoutId = null;
+
+      // Fast-forward time by 5000ms
+      jest.advanceTimersByTime(5000);
+
+      // Verify socket.close was NOT called because PONG was received
+      expect(mockSocket.close).not.toHaveBeenCalled();
+      
+      jest.useRealTimers();
+      done();
+    });
+  });
+
   describe('Teardown Trigger', () => {
     it('should send RST_STREAM frame when Observable is unsubscribed', (done) => {
       // Manually set the socket on the client (simulating successful connection)

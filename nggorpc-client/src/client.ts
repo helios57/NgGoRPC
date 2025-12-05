@@ -38,10 +38,12 @@ export class NgGoRpcClient {
     private currentUrl: string | null = null;
     private reconnectionEnabled = false;
     private pingIntervalId: any = null;
+    private pongTimeoutId: any = null;
     private readonly pingInterval: number;
     private readonly maxFrameSize: number;
     private readonly pingStreamId = 0; // Reserved stream ID for keep-alive
     private authToken: string | null = null;
+    private readonly pongTimeout = 5000; // 5 seconds timeout for PONG response
 
     constructor(private ngZone: NgZone, config?: NgGoRpcConfig) {
         // Apply configuration with defaults
@@ -106,9 +108,13 @@ export class NgGoRpcClient {
                         return;
                     }
 
-                    // Handle PONG frames - just log for now
+                    // Handle PONG frames - clear watchdog timeout
                     if (frame.flags & FrameFlags.PONG) {
                         console.log('[NgGoRpcClient] Received PONG from server');
+                        if (this.pongTimeoutId !== null) {
+                            clearTimeout(this.pongTimeoutId);
+                            this.pongTimeoutId = null;
+                        }
                         return;
                     }
 
@@ -235,16 +241,35 @@ export class NgGoRpcClient {
             this.pingIntervalId = null;
             console.log('[NgGoRpcClient] Keep-alive ping interval stopped');
         }
+        // Also clear any pending PONG timeout
+        if (this.pongTimeoutId !== null) {
+            clearTimeout(this.pongTimeoutId);
+            this.pongTimeoutId = null;
+        }
     }
 
     /**
-     * Sends a PING frame to the server
+     * Sends a PING frame to the server and starts a watchdog timeout
      */
     private sendPing(): void {
         if (this.socket && this.connected) {
             const pingFrame = encodeFrame(this.pingStreamId, FrameFlags.PING, new Uint8Array(0));
             this.socket.send(pingFrame);
             console.log('[NgGoRpcClient] Sent PING to server');
+            
+            // Clear any existing timeout
+            if (this.pongTimeoutId !== null) {
+                clearTimeout(this.pongTimeoutId);
+            }
+            
+            // Start watchdog timeout - close socket if no PONG arrives within 5 seconds
+            this.pongTimeoutId = setTimeout(() => {
+                console.warn('[NgGoRpcClient] No PONG received within timeout, closing connection');
+                if (this.socket) {
+                    // Close with code 4000 to trigger reconnection
+                    this.socket.close(4000, 'PONG timeout');
+                }
+            }, this.pongTimeout);
         }
     }
 
