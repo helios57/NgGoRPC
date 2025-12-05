@@ -70,6 +70,16 @@ func decodeFrame(data []byte) (*Frame, error) {
 	// Bytes 5-8: Length (uint32, Big Endian)
 	length := binary.BigEndian.Uint32(data[5:9])
 
+	// Enforce maximum payload size of 4MB per PROTOCOL.md
+	const maxPayloadSize = 4 * 1024 * 1024 // 4MB
+	if length > maxPayloadSize {
+		return nil, fmt.Errorf(
+			"payload too large: %d bytes exceeds maximum of %d bytes",
+			length,
+			maxPayloadSize,
+		)
+	}
+
 	// Validate payload length
 	expectedSize := headerSize + int(length)
 	if len(data) < expectedSize {

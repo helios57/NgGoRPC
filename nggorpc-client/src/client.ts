@@ -2,27 +2,20 @@ import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject, timer } from 'rxjs';
 import { retryWhen, delayWhen, tap } from 'rxjs/operators';
 import { decodeFrame, encodeFrame, FrameFlags } from './frame';
+import { WebSocketRpcTransport } from './transport';
 
 /**
- * Rpc interface compatible with ts-proto generated clients
+ * Configuration options for NgGoRpcClient
  */
-export interface Rpc {
-  request(
-    service: string,
-    method: string,
-    data: Uint8Array
-  ): Observable<Uint8Array>;
-}
-
-/**
- * WebSocket-based RPC transport implementation
- */
-export class WebSocketRpcTransport implements Rpc {
-  constructor(private client: NgGoRpcClient) {}
-
-  request(service: string, method: string, data: Uint8Array): Observable<Uint8Array> {
-    return this.client.request(service, method, data);
-  }
+export interface NgGoRpcConfig {
+  /** Keep-alive ping interval in milliseconds (default: 30000) */
+  pingInterval?: number;
+  /** Base delay for reconnection backoff in milliseconds (default: 1000) */
+  baseReconnectDelay?: number;
+  /** Maximum delay for reconnection backoff in milliseconds (default: 30000) */
+  maxReconnectDelay?: number;
+  /** Maximum frame size in bytes (default: 4194304 = 4MB) */
+  maxFrameSize?: number;
 }
 
 /**
@@ -41,16 +34,23 @@ export class NgGoRpcClient {
   private streamMap: Map<number, Subject<Uint8Array>> = new Map();
   private nextStreamId = 1; // Client-initiated streams use odd numbers
   private reconnectAttempt = 0;
-  private readonly maxReconnectDelay = 30000; // 30 seconds cap
-  private readonly baseReconnectDelay = 1000; // 1 second base
+  private readonly maxReconnectDelay: number;
+  private readonly baseReconnectDelay: number;
   private currentUrl: string | null = null;
   private reconnectionEnabled = false;
   private pingIntervalId: any = null;
-  private readonly pingInterval = 30000; // 30 seconds
+  private readonly pingInterval: number;
+  private readonly maxFrameSize: number;
   private readonly pingStreamId = 0; // Reserved stream ID for keep-alive
   private authToken: string | null = null;
 
-  constructor(private ngZone: NgZone) {}
+  constructor(private ngZone: NgZone, config?: NgGoRpcConfig) {
+    // Apply configuration with defaults
+    this.pingInterval = config?.pingInterval ?? 30000;
+    this.baseReconnectDelay = config?.baseReconnectDelay ?? 1000;
+    this.maxReconnectDelay = config?.maxReconnectDelay ?? 30000;
+    this.maxFrameSize = config?.maxFrameSize ?? 4 * 1024 * 1024; // 4MB
+  }
 
   /**
    * Establishes a WebSocket connection to the specified URL with automatic reconnection.
@@ -338,6 +338,28 @@ export class NgGoRpcClient {
 
     console.log(`[NgGoRpcClient] Sending DATA for stream ${streamId}, size: ${data.length} bytes`);
 
-    return subject.asObservable();
+    // Return an Observable with proper teardown logic for cancellation
+    return new Observable<Uint8Array>(observer => {
+      // Subscribe the internal Subject to the output Observer
+      const subscription = subject.subscribe(observer);
+
+      // Teardown logic - executes when the Observable is unsubscribed
+      return () => {
+        subscription.unsubscribe();
+        // Remove from map
+        this.streamMap.delete(streamId);
+        
+        // Send RST_STREAM to server if connection is still open
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+          // 0x07 is CANCEL error code, 0x08 is FlagRST_STREAM
+          const cancelPayload = new Uint8Array(4);
+          new DataView(cancelPayload.buffer).setUint32(0, 7, false); // Error code 7 (CANCEL)
+          
+          const rstFrame = encodeFrame(streamId, FrameFlags.RST_STREAM, cancelPayload);
+          this.socket.send(rstFrame);
+          console.log(`[NgGoRpcClient] Sent RST_STREAM (CANCEL) for stream ${streamId}`);
+        }
+      };
+    });
   }
 }

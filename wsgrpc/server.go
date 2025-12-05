@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 )
@@ -31,6 +32,8 @@ type Server struct {
 type wsConnection struct {
 	conn         *websocket.Conn
 	ctx          context.Context
+	cancel       context.CancelFunc
+	sendChan     chan []byte
 	mu           sync.Mutex
 	streamMap    map[uint32]*WebSocketServerStream
 	nextStreamID uint32
@@ -38,28 +41,93 @@ type wsConnection struct {
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
 type WebSocketServerStream struct {
-	ctx      context.Context
-	conn     *wsConnection
-	streamID uint32
-	recvChan chan []byte
-	method   string
+	ctx        context.Context
+	conn       *wsConnection
+	streamID   uint32
+	recvChan   chan []byte
+	method     string
+	headerMu   sync.Mutex
+	header     metadata.MD
+	headerSent bool
+	trailer    metadata.MD
 }
 
 // SetHeader implements grpc.ServerStream
-func (s *WebSocketServerStream) SetHeader(metadata.MD) error {
-	// TODO: Implement header sending
+// Sets the header metadata. Must be called before SendHeader or the first SendMsg.
+func (s *WebSocketServerStream) SetHeader(md metadata.MD) error {
+	s.headerMu.Lock()
+	defer s.headerMu.Unlock()
+	
+	if s.headerSent {
+		return fmt.Errorf("headers already sent")
+	}
+	
+	if s.header == nil {
+		s.header = metadata.MD{}
+	}
+	
+	// Merge metadata
+	for k, v := range md {
+		s.header[k] = append(s.header[k], v...)
+	}
+	
 	return nil
 }
 
 // SendHeader implements grpc.ServerStream
-func (s *WebSocketServerStream) SendHeader(metadata.MD) error {
-	// TODO: Implement header sending
+// Sends the header metadata immediately. Cannot be called after the first SendMsg.
+func (s *WebSocketServerStream) SendHeader(md metadata.MD) error {
+	s.headerMu.Lock()
+	defer s.headerMu.Unlock()
+	
+	if s.headerSent {
+		return fmt.Errorf("headers already sent")
+	}
+	
+	// Merge with any previously set headers
+	if s.header == nil {
+		s.header = metadata.MD{}
+	}
+	
+	for k, v := range md {
+		s.header[k] = append(s.header[k], v...)
+	}
+	
+	// Serialize headers to frame payload
+	var headerLines []string
+	for k, values := range s.header {
+		for _, v := range values {
+			headerLines = append(headerLines, fmt.Sprintf("%s: %s", k, v))
+		}
+	}
+	
+	headersPayload := []byte(strings.Join(headerLines, "\n"))
+	headersFrame := encodeFrame(s.streamID, FlagHEADERS, headersPayload)
+	
+	err := s.conn.send(headersFrame)
+	if err != nil {
+		return fmt.Errorf("failed to send headers: %w", err)
+	}
+	
+	s.headerSent = true
+	log.Printf("[wsgrpc] Sent HEADERS frame for stream %d", s.streamID)
 	return nil
 }
 
 // SetTrailer implements grpc.ServerStream
-func (s *WebSocketServerStream) SetTrailer(metadata.MD) {
-	// TODO: Implement trailer setting
+// Sets the trailer metadata. This will be sent with the final TRAILERS frame.
+func (s *WebSocketServerStream) SetTrailer(md metadata.MD) {
+	s.headerMu.Lock()
+	defer s.headerMu.Unlock()
+	
+	if s.trailer == nil {
+		s.trailer = metadata.MD{}
+	}
+	
+	// Merge metadata
+	for k, v := range md {
+		s.trailer[k] = append(s.trailer[k], v...)
+	}
 }
 
 // Context implements grpc.ServerStream
@@ -83,12 +151,9 @@ func (s *WebSocketServerStream) SendMsg(m interface{}) error {
 	// Encode and send DATA frame
 	frame := encodeFrame(s.streamID, FlagDATA, data)
 	
-	s.conn.mu.Lock()
-	defer s.conn.mu.Unlock()
-
-	err = s.conn.conn.Write(s.ctx, websocket.MessageBinary, frame)
+	err = s.conn.send(frame)
 	if err != nil {
-		return fmt.Errorf("failed to write frame: %w", err)
+		return fmt.Errorf("failed to send frame: %w", err)
 	}
 
 	log.Printf("[wsgrpc] Sent DATA frame for stream %d, size: %d bytes", s.streamID, len(data))
@@ -120,6 +185,44 @@ func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	}
+}
+
+// send sends a frame to the connection using the actor pattern (channel-based writes)
+func (c *wsConnection) send(frame []byte) error {
+	select {
+	case c.sendChan <- frame:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}
+
+// writerLoop is the actor goroutine that serializes all writes to the WebSocket
+func (c *wsConnection) writerLoop() {
+	for {
+		select {
+		case frame, ok := <-c.sendChan:
+			if !ok {
+				// Channel closed, exit writer loop
+				return
+			}
+			// Write to WebSocket without mutex contention
+			if err := c.conn.Write(c.ctx, websocket.MessageBinary, frame); err != nil {
+				log.Printf("[wsgrpc] Write error in writer loop: %v", err)
+				return
+			}
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// Close closes the connection and cleans up resources
+func (c *wsConnection) Close() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	close(c.sendChan)
 }
 
 // NewServer creates a new wsgrpc server
@@ -174,12 +277,23 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 // handleConnection manages the lifecycle of a single WebSocket connection.
 // It runs a read loop that decodes incoming frames and processes them.
 func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) error {
-	// Create connection state
+	// Create cancellable context for the connection
+	connCtx, cancel := context.WithCancel(ctx)
+	
+	// Create connection state with actor pattern
 	wsConn := &wsConnection{
 		conn:      conn,
-		ctx:       ctx,
+		ctx:       connCtx,
+		cancel:    cancel,
+		sendChan:  make(chan []byte, 100), // Buffered channel to reduce blocking
 		streamMap: make(map[uint32]*WebSocketServerStream),
 	}
+	
+	// Start the writer goroutine (actor pattern)
+	go wsConn.writerLoop()
+	
+	// Ensure cleanup on exit
+	defer wsConn.Close()
 
 	for {
 		// Read a message from the WebSocket
@@ -209,7 +323,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		if frame.Flags&FlagPING != 0 {
 			log.Printf("[wsgrpc] Received PING, sending PONG")
 			pongFrame := encodeFrame(0, FlagPONG, []byte{})
-			conn.Write(ctx, websocket.MessageBinary, pongFrame)
+			wsConn.send(pongFrame)
 			continue
 		}
 
@@ -262,12 +376,13 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				log.Printf("[wsgrpc] Method not found: %s", methodPath)
 				// Send RST_STREAM
 				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
-				conn.Write(ctx, websocket.MessageBinary, rstFrame)
+				wsConn.send(rstFrame)
 				continue
 			}
 
-			// Create context with metadata
-			streamCtx := metadata.NewIncomingContext(ctx, md)
+			// Create context with metadata derived from connection context
+			// This ensures cancellation propagates when connection closes
+			streamCtx := metadata.NewIncomingContext(wsConn.ctx, md)
 
 			// Create stream
 			stream := &WebSocketServerStream{
@@ -304,21 +419,6 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 // handleStream invokes the gRPC method handler
 func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodInfo) {
-	defer func() {
-		// Clean up stream from map
-		delete(stream.conn.streamMap, stream.streamID)
-		
-		// Send TRAILERS frame to signal completion
-		trailersPayload := []byte("grpc-status:0") // Status OK
-		trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
-		
-		stream.conn.mu.Lock()
-		stream.conn.conn.Write(stream.ctx, websocket.MessageBinary, trailersFrame)
-		stream.conn.mu.Unlock()
-		
-		log.Printf("[wsgrpc] Stream %d completed", stream.streamID)
-	}()
-
 	// Create a decoder function that reads from the stream
 	dec := func(m interface{}) error {
 		return stream.RecvMsg(m)
@@ -326,10 +426,49 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 
 	// Invoke the handler
 	_, err := methodInfo.handler.Handler(methodInfo.srv, stream.ctx, dec, nil)
+	
+	// Default status OK
+	statusCode := 0
+	statusMsg := "OK"
+
 	if err != nil {
 		log.Printf("[wsgrpc] Handler error for stream %d: %v", stream.streamID, err)
-		// TODO: Send error in trailers
+		// Extract gRPC status code from error
+		if st, ok := status.FromError(err); ok {
+			statusCode = int(st.Code())
+			statusMsg = st.Message()
+		} else {
+			// Fallback to Unknown status
+			statusCode = 2 // Unknown
+			statusMsg = err.Error()
+		}
 	}
+
+	// Build trailers payload with grpc-status and grpc-message
+	var trailerLines []string
+	trailerLines = append(trailerLines, fmt.Sprintf("grpc-status:%d", statusCode))
+	trailerLines = append(trailerLines, fmt.Sprintf("grpc-message:%s", statusMsg))
+	
+	// Add any custom trailer metadata set by the handler
+	stream.headerMu.Lock()
+	if stream.trailer != nil {
+		for k, values := range stream.trailer {
+			for _, v := range values {
+				trailerLines = append(trailerLines, fmt.Sprintf("%s: %s", k, v))
+			}
+		}
+	}
+	stream.headerMu.Unlock()
+	
+	trailersPayload := []byte(strings.Join(trailerLines, "\n"))
+	trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
+	
+	stream.conn.send(trailersFrame)
+	
+	log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, statusMsg)
+	
+	// Clean up stream from map
+	delete(stream.conn.streamMap, stream.streamID)
 }
 
 // ListenAndServe starts an HTTP server that handles WebSocket connections
