@@ -22,7 +22,7 @@ func TestIdleTimeout(t *testing.T) {
 	server := NewServer(ServerOption{
 		InsecureSkipVerify: true,
 		MaxPayloadSize:     4 * 1024 * 1024,
-		IdleTimeout:        2 * time.Second,   // Very short timeout for testing
+		IdleTimeout:        2 * time.Second,        // Very short timeout for testing
 		IdleCheckInterval:  500 * time.Millisecond, // Check frequently for faster testing
 	})
 
