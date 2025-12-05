@@ -23,6 +23,7 @@ const (
 	Greeter_SayHelloStream_FullMethodName        = "/greeter.Greeter/SayHelloStream"
 	Greeter_SayHelloClientStream_FullMethodName  = "/greeter.Greeter/SayHelloClientStream"
 	Greeter_SayHelloBidirectional_FullMethodName = "/greeter.Greeter/SayHelloBidirectional"
+	Greeter_InfiniteTicker_FullMethodName        = "/greeter.Greeter/InfiniteTicker"
 )
 
 // GreeterClient is the client API for Greeter service.
@@ -39,6 +40,8 @@ type GreeterClient interface {
 	SayHelloClientStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[HelloRequest, HelloResponse], error)
 	// Bidirectional streaming
 	SayHelloBidirectional(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[HelloRequest, HelloResponse], error)
+	// Infinite ticker for E2E testing (Server-side streaming)
+	InfiniteTicker(ctx context.Context, in *Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Tick], error)
 }
 
 type greeterClient struct {
@@ -104,6 +107,25 @@ func (c *greeterClient) SayHelloBidirectional(ctx context.Context, opts ...grpc.
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Greeter_SayHelloBidirectionalClient = grpc.BidiStreamingClient[HelloRequest, HelloResponse]
 
+func (c *greeterClient) InfiniteTicker(ctx context.Context, in *Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Tick], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Greeter_ServiceDesc.Streams[3], Greeter_InfiniteTicker_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[Empty, Tick]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Greeter_InfiniteTickerClient = grpc.ServerStreamingClient[Tick]
+
 // GreeterServer is the server API for Greeter service.
 // All implementations must embed UnimplementedGreeterServer
 // for forward compatibility.
@@ -118,6 +140,8 @@ type GreeterServer interface {
 	SayHelloClientStream(grpc.ClientStreamingServer[HelloRequest, HelloResponse]) error
 	// Bidirectional streaming
 	SayHelloBidirectional(grpc.BidiStreamingServer[HelloRequest, HelloResponse]) error
+	// Infinite ticker for E2E testing (Server-side streaming)
+	InfiniteTicker(*Empty, grpc.ServerStreamingServer[Tick]) error
 	mustEmbedUnimplementedGreeterServer()
 }
 
@@ -139,6 +163,9 @@ func (UnimplementedGreeterServer) SayHelloClientStream(grpc.ClientStreamingServe
 }
 func (UnimplementedGreeterServer) SayHelloBidirectional(grpc.BidiStreamingServer[HelloRequest, HelloResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method SayHelloBidirectional not implemented")
+}
+func (UnimplementedGreeterServer) InfiniteTicker(*Empty, grpc.ServerStreamingServer[Tick]) error {
+	return status.Errorf(codes.Unimplemented, "method InfiniteTicker not implemented")
 }
 func (UnimplementedGreeterServer) mustEmbedUnimplementedGreeterServer() {}
 func (UnimplementedGreeterServer) testEmbeddedByValue()                 {}
@@ -204,6 +231,17 @@ func _Greeter_SayHelloBidirectional_Handler(srv interface{}, stream grpc.ServerS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Greeter_SayHelloBidirectionalServer = grpc.BidiStreamingServer[HelloRequest, HelloResponse]
 
+func _Greeter_InfiniteTicker_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(Empty)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(GreeterServer).InfiniteTicker(m, &grpc.GenericServerStream[Empty, Tick]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Greeter_InfiniteTickerServer = grpc.ServerStreamingServer[Tick]
+
 // Greeter_ServiceDesc is the grpc.ServiceDesc for Greeter service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -232,6 +270,11 @@ var Greeter_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _Greeter_SayHelloBidirectional_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "InfiniteTicker",
+			Handler:       _Greeter_InfiniteTicker_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "greeter.proto",

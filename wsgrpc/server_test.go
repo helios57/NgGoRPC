@@ -42,12 +42,12 @@ func TestStreamIsolation(t *testing.T) {
 							}
 							return err
 						}
-						
+
 						// Echo back with modified message to identify which stream processed it
 						resp := &pb.HelloResponse{
 							Message: fmt.Sprintf("Stream processed: %s", req.GetName()),
 						}
-						
+
 						if err := stream.SendMsg(resp); err != nil {
 							return err
 						}
@@ -58,7 +58,7 @@ func TestStreamIsolation(t *testing.T) {
 			},
 		},
 	}
-	
+
 	server.RegisterService(desc, nil)
 
 	// Create test HTTP server
@@ -120,7 +120,7 @@ func TestStreamIsolation(t *testing.T) {
 	// Read responses and verify isolation
 	receivedStream1 := false
 	receivedStream3 := false
-	
+
 	// Set a timeout for reading responses
 	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -160,7 +160,7 @@ func TestStreamIsolation(t *testing.T) {
 			}
 			receivedStream1 = true
 			t.Logf("Stream 1 correctly received: %s", resp.GetMessage())
-			
+
 		case stream3ID:
 			if resp.GetMessage() != "Stream processed: Bob" {
 				t.Errorf("Stream 3 received wrong data: got %q, want %q",
@@ -168,7 +168,7 @@ func TestStreamIsolation(t *testing.T) {
 			}
 			receivedStream3 = true
 			t.Logf("Stream 3 correctly received: %s", resp.GetMessage())
-			
+
 		default:
 			t.Errorf("Received response on unexpected stream ID: %d", frame.StreamID)
 		}
@@ -191,7 +191,7 @@ func TestStreamIsolation(t *testing.T) {
 	if err := conn.Write(ctx, websocket.MessageBinary, finFrame1); err != nil {
 		t.Logf("Failed to send FIN for stream 1: %v", err)
 	}
-	
+
 	finFrame3 := encodeFrame(stream3ID, FlagDATA|FlagEOS, []byte{})
 	if err := conn.Write(ctx, websocket.MessageBinary, finFrame3); err != nil {
 		t.Logf("Failed to send FIN for stream 3: %v", err)

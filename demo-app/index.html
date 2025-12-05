@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NgGoRPC Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        h1 {
+            color: #333;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .start {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+        }
+        .stop {
+            background-color: #f44336;
+            color: white;
+            border: none;
+        }
+        .counter {
+            font-size: 48px;
+            margin: 20px 0;
+            color: #2196F3;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+        .status.connected {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .status.disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+        .status.reconnecting {
+            background-color: #FF9800;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NgGoRPC Infinite Ticker Demo</h1>
+        
+        <div id="status" class="status disconnected">Status: Disconnected</div>
+        
+        <div>
+            <button id="startBtn" class="start">Start Ticker</button>
+            <button id="stopBtn" class="stop" disabled>Stop Ticker</button>
+        </div>
+        
+        <div>
+            <h2>Tick Count:</h2>
+            <div id="counter" class="counter">0</div>
+        </div>
+        
+        <div>
+            <h3>Last Update:</h3>
+            <div id="timestamp">-</div>
+        </div>
+    </div>
+
+    <script type="module">
+        // This is a placeholder for the actual implementation
+        // In a real scenario, this would use the nggorpc-client library
+        
+        let tickerActive = false;
+        let count = 0;
+        
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const counterEl = document.getElementById('counter');
+        const timestampEl = document.getElementById('timestamp');
+        const statusEl = document.getElementById('status');
+        
+        function updateStatus(status) {
+            statusEl.className = 'status ' + status;
+            statusEl.textContent = 'Status: ' + status.charAt(0).toUpperCase() + status.slice(1);
+        }
+        
+        function startTicker() {
+            tickerActive = true;
+            count = 0;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            updateStatus('connected');
+            
+            // Simulate ticker
+            window.tickerInterval = setInterval(() => {
+                if (tickerActive) {
+                    count++;
+                    counterEl.textContent = count;
+                    timestampEl.textContent = new Date().toLocaleString();
+                }
+            }, 100);
+        }
+        
+        function stopTicker() {
+            tickerActive = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            updateStatus('disconnected');
+            
+            if (window.tickerInterval) {
+                clearInterval(window.tickerInterval);
+            }
+        }
+        
+        startBtn.addEventListener('click', startTicker);
+        stopBtn.addEventListener('click', stopTicker);
+        
+        // Initialize
+        updateStatus('disconnected');
+    </script>
+</body>
+</html>

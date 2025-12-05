@@ -275,15 +275,15 @@ func (c *wsConnection) checkIdleStreams() {
 
 		if idleDuration > idleTimeout {
 			log.Printf("[wsgrpc] Stream %d idle for %v, closing due to timeout", streamID, idleDuration)
-			
+
 			// Cancel the stream's context
 			if stream.cancel != nil {
 				stream.cancel()
 			}
-			
+
 			// Close the receive channel to unblock any pending RecvMsg
 			close(stream.recvChan)
-			
+
 			// Remove from stream map
 			delete(c.streamMap, streamID)
 		}
@@ -302,15 +302,15 @@ func (c *wsConnection) Close() {
 func NewServer(opts ...ServerOption) *Server {
 	// Default options
 	options := ServerOption{
-		InsecureSkipVerify: false, // Secure by default
+		InsecureSkipVerify: false,           // Secure by default
 		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
 	}
-	
+
 	// Apply provided options
 	if len(opts) > 0 {
 		options = opts[0]
 	}
-	
+
 	return &Server{
 		methods: make(map[string]*methodInfo),
 		options: options,
@@ -483,7 +483,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			// Create context with metadata derived from connection context
 			// This ensures cancellation propagates when connection closes
 			streamCtx := metadata.NewIncomingContext(wsConn.ctx, md)
-			
+
 			// Create cancellable context for this specific stream
 			// This allows individual stream cancellation via RST_STREAM
 			streamCtx, streamCancel := context.WithCancel(streamCtx)

@@ -31,3 +31,13 @@ message HelloRequest {
 message HelloResponse {
   string message = 1;
 }
+
+// Empty message for InfiniteTicker
+message Empty {
+}
+
+// Tick message for InfiniteTicker
+message Tick {
+  int64 count = 1;
+  int64 timestamp = 2;
+}

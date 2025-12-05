@@ -111,6 +111,96 @@ func (x *HelloResponse) GetMessage() string {
 	return ""
 }
 
+// Empty message for InfiniteTicker
+type Empty struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Empty) Reset() {
+	*x = Empty{}
+	mi := &file_greeter_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Empty) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Empty) ProtoMessage() {}
+
+func (x *Empty) ProtoReflect() protoreflect.Message {
+	mi := &file_greeter_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Empty.ProtoReflect.Descriptor instead.
+func (*Empty) Descriptor() ([]byte, []int) {
+	return file_greeter_proto_rawDescGZIP(), []int{2}
+}
+
+// Tick message for InfiniteTicker
+type Tick struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Count         int64                  `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Tick) Reset() {
+	*x = Tick{}
+	mi := &file_greeter_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Tick) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Tick) ProtoMessage() {}
+
+func (x *Tick) ProtoReflect() protoreflect.Message {
+	mi := &file_greeter_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Tick.ProtoReflect.Descriptor instead.
+func (*Tick) Descriptor() ([]byte, []int) {
+	return file_greeter_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Tick) GetCount() int64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *Tick) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 var File_greeter_proto protoreflect.FileDescriptor
 
 const file_greeter_proto_rawDesc = "" +
@@ -138,22 +228,26 @@ func file_greeter_proto_rawDescGZIP() []byte {
 	return file_greeter_proto_rawDescData
 }
 
-var file_greeter_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_greeter_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_greeter_proto_goTypes = []any{
 	(*HelloRequest)(nil),  // 0: greeter.HelloRequest
 	(*HelloResponse)(nil), // 1: greeter.HelloResponse
+	(*Empty)(nil),         // 2: greeter.Empty
+	(*Tick)(nil),          // 3: greeter.Tick
 }
 var file_greeter_proto_depIdxs = []int32{
 	0, // 0: greeter.Greeter.SayHello:input_type -> greeter.HelloRequest
 	0, // 1: greeter.Greeter.SayHelloStream:input_type -> greeter.HelloRequest
 	0, // 2: greeter.Greeter.SayHelloClientStream:input_type -> greeter.HelloRequest
 	0, // 3: greeter.Greeter.SayHelloBidirectional:input_type -> greeter.HelloRequest
-	1, // 4: greeter.Greeter.SayHello:output_type -> greeter.HelloResponse
-	1, // 5: greeter.Greeter.SayHelloStream:output_type -> greeter.HelloResponse
-	1, // 6: greeter.Greeter.SayHelloClientStream:output_type -> greeter.HelloResponse
-	1, // 7: greeter.Greeter.SayHelloBidirectional:output_type -> greeter.HelloResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
+	2, // 4: greeter.Greeter.InfiniteTicker:input_type -> greeter.Empty
+	1, // 5: greeter.Greeter.SayHello:output_type -> greeter.HelloResponse
+	1, // 6: greeter.Greeter.SayHelloStream:output_type -> greeter.HelloResponse
+	1, // 7: greeter.Greeter.SayHelloClientStream:output_type -> greeter.HelloResponse
+	1, // 8: greeter.Greeter.SayHelloBidirectional:output_type -> greeter.HelloResponse
+	3, // 9: greeter.Greeter.InfiniteTicker:output_type -> greeter.Tick
+	5, // [5:10] is the sub-list for method output_type
+	0, // [0:5] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -170,7 +264,7 @@ func file_greeter_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_greeter_proto_rawDesc), len(file_greeter_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
