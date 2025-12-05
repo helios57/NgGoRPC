@@ -1,0 +1,343 @@
+import { Injectable, NgZone } from '@angular/core';
+import { Observable, Subject, timer } from 'rxjs';
+import { retryWhen, delayWhen, tap } from 'rxjs/operators';
+import { decodeFrame, encodeFrame, FrameFlags } from './frame';
+
+/**
+ * Rpc interface compatible with ts-proto generated clients
+ */
+export interface Rpc {
+  request(
+    service: string,
+    method: string,
+    data: Uint8Array
+  ): Observable<Uint8Array>;
+}
+
+/**
+ * WebSocket-based RPC transport implementation
+ */
+export class WebSocketRpcTransport implements Rpc {
+  constructor(private client: NgGoRpcClient) {}
+
+  request(service: string, method: string, data: Uint8Array): Observable<Uint8Array> {
+    return this.client.request(service, method, data);
+  }
+}
+
+/**
+ * NgGoRPC Client Service
+ * 
+ * Manages WebSocket connections for gRPC over WebSocket communication.
+ * Uses Angular's NgZone to optimize performance by running WebSocket operations
+ * outside the Angular change detection zone.
+ */
+@Injectable({
+  providedIn: 'root'
+})
+export class NgGoRpcClient {
+  private socket: WebSocket | null = null;
+  private connected = false;
+  private streamMap: Map<number, Subject<Uint8Array>> = new Map();
+  private nextStreamId = 1; // Client-initiated streams use odd numbers
+  private reconnectAttempt = 0;
+  private readonly maxReconnectDelay = 30000; // 30 seconds cap
+  private readonly baseReconnectDelay = 1000; // 1 second base
+  private currentUrl: string | null = null;
+  private reconnectionEnabled = false;
+  private pingIntervalId: any = null;
+  private readonly pingInterval = 30000; // 30 seconds
+  private readonly pingStreamId = 0; // Reserved stream ID for keep-alive
+  private authToken: string | null = null;
+
+  constructor(private ngZone: NgZone) {}
+
+  /**
+   * Establishes a WebSocket connection to the specified URL with automatic reconnection.
+   * 
+   * The connection is established outside the Angular zone to prevent
+   * high-frequency WebSocket events from triggering unnecessary change detection cycles.
+   * 
+   * @param url - The WebSocket URL to connect to (e.g., 'ws://localhost:8080' or 'wss://example.com')
+   * @param enableReconnection - Whether to enable automatic reconnection (default: true)
+   */
+  connect(url: string, enableReconnection: boolean = true): void {
+    this.currentUrl = url;
+    this.reconnectionEnabled = enableReconnection;
+    this.attemptConnection();
+  }
+
+  /**
+   * Internal method to attempt a WebSocket connection
+   */
+  private attemptConnection(): void {
+    if (!this.currentUrl) {
+      return;
+    }
+
+    // Run WebSocket operations outside Angular zone for better performance
+    this.ngZone.runOutsideAngular(() => {
+      this.socket = new WebSocket(this.currentUrl!);
+      
+      // Set binary type to arraybuffer for efficient binary frame processing
+      this.socket.binaryType = 'arraybuffer';
+
+      this.socket.onopen = () => {
+        console.log('[NgGoRpcClient] WebSocket connection established');
+        this.connected = true;
+        this.reconnectAttempt = 0; // Reset reconnection counter on successful connection
+        this.startPingInterval();
+      };
+
+      this.socket.onmessage = (event: MessageEvent) => {
+        try {
+          // Decode the incoming frame
+          const frame = decodeFrame(event.data as ArrayBuffer);
+          
+          // Log decoded frame for validation
+          console.log('[NgGoRpcClient] Received frame:', {
+            streamId: frame.streamId,
+            flags: `0x${frame.flags.toString(16).padStart(2, '0')}`,
+            payloadSize: frame.payload.length
+          });
+
+          // Handle PING frames - respond with PONG
+          if (frame.flags & FrameFlags.PING) {
+            this.sendPong();
+            return;
+          }
+
+          // Handle PONG frames - just log for now
+          if (frame.flags & FrameFlags.PONG) {
+            console.log('[NgGoRpcClient] Received PONG from server');
+            return;
+          }
+
+          // Dispatch frame to the appropriate stream
+          const subject = this.streamMap.get(frame.streamId);
+          if (subject) {
+            // Re-enter Angular zone only when delivering data to components
+            this.ngZone.run(() => {
+              if (frame.flags & FrameFlags.DATA) {
+                subject.next(frame.payload);
+              }
+              
+              if (frame.flags & FrameFlags.TRAILERS) {
+                // Parse grpc-status from trailers payload
+                const trailersText = new TextDecoder().decode(frame.payload);
+                const statusMatch = trailersText.match(/grpc-status:\s*(\d+)/);
+                const messageMatch = trailersText.match(/grpc-message:\s*([^\n]+)/);
+                
+                const grpcStatus = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+                const grpcMessage = messageMatch ? messageMatch[1].trim() : '';
+                
+                if (grpcStatus === 0) {
+                  // Status OK - complete successfully
+                  subject.complete();
+                } else {
+                  // Non-OK status - emit error
+                  const errorMsg = grpcMessage || `gRPC error with status code ${grpcStatus}`;
+                  subject.error(new Error(errorMsg));
+                }
+                this.streamMap.delete(frame.streamId);
+              }
+              
+              if (frame.flags & FrameFlags.RST_STREAM) {
+                subject.error(new Error('Stream reset by server'));
+                this.streamMap.delete(frame.streamId);
+              }
+            });
+          }
+        } catch (error) {
+          console.error('[NgGoRpcClient] Frame decoding error:', error);
+        }
+      };
+
+      this.socket.onerror = (error) => {
+        console.error('[NgGoRpcClient] WebSocket error:', error);
+      };
+
+      this.socket.onclose = (event) => {
+        console.log('[NgGoRpcClient] WebSocket connection closed:', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean
+        });
+        this.connected = false;
+        this.socket = null;
+
+        // Stop keep-alive ping interval
+        this.stopPingInterval();
+
+        // Error out all active streams with UNAVAILABLE status
+        this.errorOutActiveStreams();
+
+        // Attempt reconnection if enabled
+        if (this.reconnectionEnabled) {
+          this.scheduleReconnection();
+        }
+      };
+    });
+  }
+
+  /**
+   * Errors out all active streams when disconnection occurs
+   */
+  private errorOutActiveStreams(): void {
+    this.ngZone.run(() => {
+      this.streamMap.forEach((subject, streamId) => {
+        subject.error(new Error('Connection lost - UNAVAILABLE'));
+      });
+      this.streamMap.clear();
+    });
+  }
+
+  /**
+   * Schedules a reconnection attempt with exponential backoff
+   */
+  private scheduleReconnection(): void {
+    // Calculate delay with exponential backoff: min(cap, base * 2^attempt)
+    const delay = Math.min(
+      this.maxReconnectDelay,
+      this.baseReconnectDelay * Math.pow(2, this.reconnectAttempt)
+    );
+
+    console.log(`[NgGoRpcClient] Scheduling reconnection attempt ${this.reconnectAttempt + 1} in ${delay}ms`);
+
+    this.reconnectAttempt++;
+
+    setTimeout(() => {
+      if (this.reconnectionEnabled && this.currentUrl) {
+        console.log('[NgGoRpcClient] Attempting reconnection...');
+        this.attemptConnection();
+      }
+    }, delay);
+  }
+
+  /**
+   * Starts the keep-alive ping interval
+   */
+  private startPingInterval(): void {
+    // Run outside Angular zone to avoid triggering change detection
+    this.ngZone.runOutsideAngular(() => {
+      this.pingIntervalId = setInterval(() => {
+        this.sendPing();
+      }, this.pingInterval);
+    });
+    console.log('[NgGoRpcClient] Keep-alive ping interval started');
+  }
+
+  /**
+   * Stops the keep-alive ping interval
+   */
+  private stopPingInterval(): void {
+    if (this.pingIntervalId) {
+      clearInterval(this.pingIntervalId);
+      this.pingIntervalId = null;
+      console.log('[NgGoRpcClient] Keep-alive ping interval stopped');
+    }
+  }
+
+  /**
+   * Sends a PING frame to the server
+   */
+  private sendPing(): void {
+    if (this.socket && this.connected) {
+      const pingFrame = encodeFrame(this.pingStreamId, FrameFlags.PING, new Uint8Array(0));
+      this.socket.send(pingFrame);
+      console.log('[NgGoRpcClient] Sent PING to server');
+    }
+  }
+
+  /**
+   * Sends a PONG frame in response to a server PING
+   */
+  private sendPong(): void {
+    if (this.socket && this.connected) {
+      const pongFrame = encodeFrame(this.pingStreamId, FrameFlags.PONG, new Uint8Array(0));
+      this.socket.send(pongFrame);
+      console.log('[NgGoRpcClient] Sent PONG to server');
+    }
+  }
+
+  /**
+   * Closes the WebSocket connection and disables reconnection.
+   */
+  disconnect(): void {
+    this.reconnectionEnabled = false; // Disable auto-reconnection
+    this.stopPingInterval();
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+      this.connected = false;
+    }
+  }
+
+  /**
+   * Returns whether the client is currently connected.
+   */
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  /**
+   * Sets the authentication token to be included in RPC headers.
+   * 
+   * @param token - The authentication token (e.g., JWT bearer token)
+   */
+  setAuthToken(token: string | null): void {
+    this.authToken = token;
+  }
+
+  /**
+   * Creates an RPC transport that can be used with ts-proto generated clients.
+   */
+  createTransport(): WebSocketRpcTransport {
+    return new WebSocketRpcTransport(this);
+  }
+
+  /**
+   * Sends an RPC request over the WebSocket connection.
+   * 
+   * @param service - The service name (e.g., 'mypackage.Greeter')
+   * @param method - The method name (e.g., 'SayHello')
+   * @param data - The serialized Protobuf request data
+   * @returns An Observable that emits the response data
+   */
+  request(service: string, method: string, data: Uint8Array): Observable<Uint8Array> {
+    if (!this.socket || !this.connected) {
+      throw new Error('WebSocket is not connected');
+    }
+
+    // Generate a new odd-numbered stream ID
+    const streamId = this.nextStreamId;
+    this.nextStreamId += 2; // Increment by 2 to keep odd numbers
+
+    // Create a subject for this stream
+    const subject = new Subject<Uint8Array>();
+    this.streamMap.set(streamId, subject);
+
+    // Send HEADERS frame with method path and optional auth token
+    const methodPath = `/${service}/${method}`;
+    let headersText = `path: ${methodPath}`;
+    
+    // Include authorization header if token is set
+    if (this.authToken) {
+      headersText += `\nauthorization: Bearer ${this.authToken}`;
+    }
+    
+    const headersPayload = new TextEncoder().encode(headersText);
+    const headersFrame = encodeFrame(streamId, FrameFlags.HEADERS, headersPayload);
+    this.socket.send(headersFrame);
+
+    console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${methodPath}`);
+
+    // Send DATA frame with request payload (with EOS flag for unary calls)
+    const dataFrame = encodeFrame(streamId, FrameFlags.DATA | FrameFlags.EOS, data);
+    this.socket.send(dataFrame);
+
+    console.log(`[NgGoRpcClient] Sending DATA for stream ${streamId}, size: ${data.length} bytes`);
+
+    return subject.asObservable();
+  }
+}

@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package greeter;
+
+option go_package = "github.com/nggorpc/wsgrpc/generated/greeter";
+
+// The greeting service definition
+service Greeter {
+  // Sends a greeting (Unary RPC)
+  rpc SayHello (HelloRequest) returns (HelloResponse);
+  
+  // Sends multiple greetings (Server-side streaming)
+  rpc SayHelloStream (HelloRequest) returns (stream HelloResponse);
+  
+  // Receives multiple names (Client-side streaming)
+  rpc SayHelloClientStream (stream HelloRequest) returns (HelloResponse);
+  
+  // Bidirectional streaming
+  rpc SayHelloBidirectional (stream HelloRequest) returns (stream HelloResponse);
+}
+
+// The request message containing the user's name
+message HelloRequest {
+  string name = 1;
+}
+
+// The response message containing the greeting
+message HelloResponse {
+  string message = 1;
+}
