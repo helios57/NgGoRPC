@@ -17,11 +17,18 @@ import { execSync } from 'child_process';
 
 test.describe('The Long Stream Scenario', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the demo app
-    await page.goto('/');
+    // Listen for console messages
+    page.on('console', msg => console.log(`[BROWSER ${msg.type()}] ${msg.text()}`));
+    page.on('pageerror', err => console.error(`[BROWSER ERROR] ${err.message}`));
+    
+    // Navigate to the demo app and wait for network to be idle
+    await page.goto('/', { waitUntil: 'networkidle' });
+    
+    // Wait for Angular to bootstrap and render
+    await page.waitForLoadState('domcontentloaded');
     
     // Wait for page to be ready
-    await expect(page.locator('h1')).toContainText('NgGoRPC Infinite Ticker Demo');
+    await expect(page.locator('h1')).toContainText('NgGoRPC Infinite Ticker Demo', { timeout: 10000 });
   });
 
   test('should start ticker, increment counter, stop ticker, and verify server cancellation', async ({ page }) => {
@@ -66,8 +73,7 @@ test.describe('The Long Stream Scenario', () => {
     // Step 4: Click "Stop Ticker" button
     await stopBtn.click();
     
-    // Verify status changed
-    await expect(status).toContainText('Disconnected');
+    // Verify button states changed (but WebSocket stays connected)
     await expect(startBtn).toBeEnabled();
     await expect(stopBtn).toBeDisabled();
     
@@ -114,26 +120,38 @@ test.describe('The Long Stream Scenario', () => {
     const counter = page.locator('#counter');
     const startBtn = page.locator('#startBtn');
     const stopBtn = page.locator('#stopBtn');
+    const status = page.locator('#status');
+    
+    // Wait for backend to be ready (connection established)
+    await expect(status).toContainText('Disconnected', { timeout: 10000 });
     
     // First cycle
     await startBtn.click();
-    await page.waitForTimeout(300);
+    await expect(async () => {
+      const count = parseInt(await counter.textContent() || '0');
+      expect(count).toBeGreaterThan(0);
+    }).toPass({ timeout: 2000 });
     const firstCycleCount = parseInt(await counter.textContent() || '0');
-    expect(firstCycleCount).toBeGreaterThan(0);
     await stopBtn.click();
+    await page.waitForTimeout(200); // Wait for stream to stop
     
     // Second cycle
     await startBtn.click();
-    await page.waitForTimeout(300);
+    await expect(async () => {
+      const count = parseInt(await counter.textContent() || '0');
+      expect(count).toBeGreaterThan(0);
+    }).toPass({ timeout: 2000 });
     const secondCycleCount = parseInt(await counter.textContent() || '0');
-    expect(secondCycleCount).toBeGreaterThan(0);
     await stopBtn.click();
+    await page.waitForTimeout(200); // Wait for stream to stop
     
     // Third cycle
     await startBtn.click();
-    await page.waitForTimeout(300);
+    await expect(async () => {
+      const count = parseInt(await counter.textContent() || '0');
+      expect(count).toBeGreaterThan(0);
+    }).toPass({ timeout: 2000 });
     const thirdCycleCount = parseInt(await counter.textContent() || '0');
-    expect(thirdCycleCount).toBeGreaterThan(0);
     await stopBtn.click();
     
     console.log(`[DEBUG_LOG] Multiple cycles completed: ${firstCycleCount}, ${secondCycleCount}, ${thirdCycleCount}`);

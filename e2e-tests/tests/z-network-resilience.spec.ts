@@ -16,11 +16,18 @@ import { execSync } from 'child_process';
 
 test.describe('Network Resilience Scenario', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the demo app
-    await page.goto('/');
+    // Listen for console messages
+    page.on('console', msg => console.log(`[BROWSER ${msg.type()}] ${msg.text()}`));
+    page.on('pageerror', err => console.error(`[BROWSER ERROR] ${err.message}`));
+    
+    // Navigate to the demo app and wait for network to be idle
+    await page.goto('/', { waitUntil: 'networkidle' });
+    
+    // Wait for Angular to bootstrap and render
+    await page.waitForLoadState('domcontentloaded');
     
     // Wait for page to be ready
-    await expect(page.locator('h1')).toContainText('NgGoRPC Infinite Ticker Demo');
+    await expect(page.locator('h1')).toContainText('NgGoRPC Infinite Ticker Demo', { timeout: 10000 });
   });
 
   test('should handle backend restart and reconnect automatically', async ({ page }) => {
@@ -153,8 +160,12 @@ test.describe('Network Resilience Scenario', () => {
     const statusText = await status.textContent();
     console.log(`[DEBUG_LOG] Status when backend unavailable: ${statusText}`);
     
-    // Should show some error state (not "Connected")
-    expect(statusText?.toLowerCase().includes('connected')).toBeFalsy();
+    // Should show some error state (Disconnected, Reconnecting, or Unavailable)
+    const isErrorState = 
+      statusText?.toLowerCase().includes('disconnected') ||
+      statusText?.toLowerCase().includes('reconnecting') ||
+      statusText?.toLowerCase().includes('unavailable');
+    expect(isErrorState).toBeTruthy();
     
     // Restart backend for cleanup
     console.log('[DEBUG_LOG] Restarting backend for cleanup');
@@ -163,6 +174,7 @@ test.describe('Network Resilience Scenario', () => {
       timeout: 30000
     });
     
-    await page.waitForTimeout(3000);
+    // Wait longer to ensure backend is fully ready
+    await page.waitForTimeout(5000);
   });
 });

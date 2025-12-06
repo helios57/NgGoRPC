@@ -51,6 +51,7 @@ type wsConnection struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	sendChan     chan []byte
+	sendClosed   bool // Flag to track if sendChan is closed
 	mu           sync.Mutex
 	streamMap    map[uint32]*WebSocketServerStream
 	nextStreamID uint32
@@ -223,6 +224,14 @@ func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
 
 // send sends a frame to the connection using the actor pattern (channel-based writes)
 func (c *wsConnection) send(frame []byte) error {
+	// Check if channel is closed before attempting to send
+	c.mu.Lock()
+	if c.sendClosed {
+		c.mu.Unlock()
+		return fmt.Errorf("connection send channel is closed")
+	}
+	c.mu.Unlock()
+
 	select {
 	case c.sendChan <- frame:
 		return nil
@@ -306,7 +315,14 @@ func (c *wsConnection) Close() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	close(c.sendChan)
+
+	// Set closed flag before closing channel to prevent sends
+	c.mu.Lock()
+	if !c.sendClosed {
+		c.sendClosed = true
+		close(c.sendChan)
+	}
+	c.mu.Unlock()
 }
 
 // NewServer creates a new wsgrpc server with optional configuration
@@ -629,7 +645,10 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 	trailersPayload := []byte(strings.Join(trailerLines, "\n"))
 	trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
 
-	stream.conn.send(trailersFrame)
+	// Only send trailers if connection is still active
+	if err := stream.conn.send(trailersFrame); err != nil {
+		log.Printf("[wsgrpc] Failed to send trailers for stream %d: %v", stream.streamID, err)
+	}
 
 	log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, statusMsg)
 

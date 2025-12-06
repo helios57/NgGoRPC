@@ -10,20 +10,14 @@ services:
       - "8080:8080"
     networks:
       - nggorpc-network
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
   frontend:
     build:
-      context: demo-app
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: demo-app/Dockerfile
     container_name: nggorpc-frontend
     ports:
-      - "80:80"
+      - "8352:80"
     networks:
       - nggorpc-network
     depends_on:

@@ -1,0 +1,41 @@
+<div class="container">
+  <h1>{{ title }}</h1>
+
+  <div
+    id="status"
+    class="status"
+    [ngClass]="{
+      'connected': status === 'connected',
+      'disconnected': status === 'disconnected',
+      'reconnecting': status === 'reconnecting'
+    }">
+    Status: {{ status | titlecase }}
+  </div>
+
+  <div class="button-group">
+    <button
+      id="startBtn"
+      class="start"
+      (click)="startTicker()"
+      [disabled]="isTickerActive">
+      Start Ticker
+    </button>
+    <button
+      id="stopBtn"
+      class="stop"
+      (click)="stopTicker()"
+      [disabled]="!isTickerActive">
+      Stop Ticker
+    </button>
+  </div>
+
+  <div>
+    <h2>Tick Count:</h2>
+    <div id="counter" class="counter">{{ tickCount }}</div>
+  </div>
+
+  <div>
+    <h3>Last Update:</h3>
+    <div id="timestamp">{{ lastTimestamp }}</div>
+  </div>
+</div>

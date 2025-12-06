@@ -19,12 +19,15 @@ export default defineConfig({
   workers: 1,
   
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: 'html',
+  reporter: 'line',
   
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost',
+    baseURL: 'http://localhost:8352',
+    
+    /* Run tests in headless mode */
+    headless: true,
     
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -47,7 +50,7 @@ export default defineConfig({
   /* Run your local dev server before starting the tests */
   webServer: {
     command: 'echo "Using Docker Compose for services"',
-    url: 'http://localhost',
+    url: 'http://localhost:8352',
     reuseExistingServer: true,
     timeout: 120 * 1000,
   },

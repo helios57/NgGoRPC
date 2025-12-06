@@ -8,7 +8,8 @@ module.exports = {
   transform: {
     ...tsJestTransformCfg,
   },
+  testMatch: ['**/projects/client/src/**/*.spec.ts'],
   moduleNameMapper: {
-    '^@angular/core$': '<rootDir>/src/__mocks__/@angular/core.ts',
+    '^@angular/core$': '<rootDir>/projects/client/src/__mocks__/@angular/core.ts',
   },
 };

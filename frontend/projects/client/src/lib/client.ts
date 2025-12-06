@@ -1,4 +1,4 @@
-import {Injectable, NgZone} from '@angular/core';
+import {NgZone} from '@angular/core';
 import {Observable, Subject} from 'rxjs';
 import {decodeFrame, encodeFrame, FrameFlags} from './frame';
 import {WebSocketRpcTransport} from './transport';
@@ -15,18 +15,19 @@ export interface NgGoRpcConfig {
     maxReconnectDelay?: number;
     /** Maximum frame size in bytes (default: 4194304 = 4MB) */
     maxFrameSize?: number;
+    /** Enable debug logging (default: false) */
+    enableLogging?: boolean;
 }
 
 /**
- * NgGoRPC Client Service
+ * NgGoRPC Client
  *
  * Manages WebSocket connections for gRPC over WebSocket communication.
  * Uses Angular's NgZone to optimize performance by running WebSocket operations
  * outside the Angular change detection zone.
+ *
+ * Note: This class is NOT a service. It must be manually instantiated with config.
  */
-@Injectable({
-    providedIn: 'root'
-})
 export class NgGoRpcClient {
     private socket: WebSocket | null = null;
     private connected = false;
@@ -44,6 +45,7 @@ export class NgGoRpcClient {
     private readonly pingStreamId = 0; // Reserved stream ID for keep-alive
     private authToken: string | null = null;
     private readonly pongTimeout = 5000; // 5 seconds timeout for PONG response
+    private readonly enableLogging: boolean;
 
     constructor(private ngZone: NgZone, config?: NgGoRpcConfig) {
         // Apply configuration with defaults
@@ -51,6 +53,7 @@ export class NgGoRpcClient {
         this.baseReconnectDelay = config?.baseReconnectDelay ?? 1000;
         this.maxReconnectDelay = config?.maxReconnectDelay ?? 30000;
         this.maxFrameSize = config?.maxFrameSize ?? 4 * 1024 * 1024; // 4MB
+        this.enableLogging = config?.enableLogging ?? false;
     }
 
     /**
@@ -84,7 +87,9 @@ export class NgGoRpcClient {
             this.socket.binaryType = 'arraybuffer';
 
             this.socket.onopen = () => {
-                console.log('[NgGoRpcClient] WebSocket connection established');
+                if (this.enableLogging) {
+                    console.log('[NgGoRpcClient] WebSocket connection established');
+                }
                 this.connected = true;
                 this.reconnectAttempt = 0; // Reset reconnection counter on successful connection
                 this.startPingInterval();
@@ -96,11 +101,13 @@ export class NgGoRpcClient {
                     const frame = decodeFrame(event.data as ArrayBuffer);
 
                     // Log decoded frame for validation
-                    console.log('[NgGoRpcClient] Received frame:', {
-                        streamId: frame.streamId,
-                        flags: `0x${frame.flags.toString(16).padStart(2, '0')}`,
-                        payloadSize: frame.payload.length
-                    });
+                    if (this.enableLogging) {
+                        console.log('[NgGoRpcClient] Received frame:', {
+                            streamId: frame.streamId,
+                            flags: `0x${frame.flags.toString(16).padStart(2, '0')}`,
+                            payloadSize: frame.payload.length
+                        });
+                    }
 
                     // Handle PING frames - respond with PONG
                     if (frame.flags & FrameFlags.PING) {
@@ -110,7 +117,9 @@ export class NgGoRpcClient {
 
                     // Handle PONG frames - clear watchdog timeout
                     if (frame.flags & FrameFlags.PONG) {
-                        console.log('[NgGoRpcClient] Received PONG from server');
+                        if (this.enableLogging) {
+                            console.log('[NgGoRpcClient] Received PONG from server');
+                        }
                         if (this.pongTimeoutId !== null) {
                             clearTimeout(this.pongTimeoutId);
                             this.pongTimeoutId = null;
@@ -163,11 +172,13 @@ export class NgGoRpcClient {
             };
 
             this.socket.onclose = (event) => {
-                console.log('[NgGoRpcClient] WebSocket connection closed:', {
-                    code: event.code,
-                    reason: event.reason,
-                    wasClean: event.wasClean
-                });
+                if (this.enableLogging) {
+                    console.log('[NgGoRpcClient] WebSocket connection closed:', {
+                        code: event.code,
+                        reason: event.reason,
+                        wasClean: event.wasClean
+                    });
+                }
                 this.connected = false;
                 this.socket = null;
 
@@ -207,13 +218,17 @@ export class NgGoRpcClient {
             this.baseReconnectDelay * Math.pow(2, this.reconnectAttempt)
         );
 
-        console.log(`[NgGoRpcClient] Scheduling reconnection attempt ${this.reconnectAttempt + 1} in ${delay}ms`);
+        if (this.enableLogging) {
+            console.log(`[NgGoRpcClient] Scheduling reconnection attempt ${this.reconnectAttempt + 1} in ${delay}ms`);
+        }
 
         this.reconnectAttempt++;
 
         setTimeout(() => {
             if (this.reconnectionEnabled && this.currentUrl) {
-                console.log('[NgGoRpcClient] Attempting reconnection...');
+                if (this.enableLogging) {
+                    console.log('[NgGoRpcClient] Attempting reconnection...');
+                }
                 this.attemptConnection();
             }
         }, delay);
@@ -229,7 +244,9 @@ export class NgGoRpcClient {
                 this.sendPing();
             }, this.pingInterval);
         });
-        console.log('[NgGoRpcClient] Keep-alive ping interval started');
+        if (this.enableLogging) {
+            console.log('[NgGoRpcClient] Keep-alive ping interval started');
+        }
     }
 
     /**
@@ -239,7 +256,9 @@ export class NgGoRpcClient {
         if (this.pingIntervalId) {
             clearInterval(this.pingIntervalId);
             this.pingIntervalId = null;
-            console.log('[NgGoRpcClient] Keep-alive ping interval stopped');
+            if (this.enableLogging) {
+                console.log('[NgGoRpcClient] Keep-alive ping interval stopped');
+            }
         }
         // Also clear any pending PONG timeout
         if (this.pongTimeoutId !== null) {
@@ -255,13 +274,15 @@ export class NgGoRpcClient {
         if (this.socket && this.connected) {
             const pingFrame = encodeFrame(this.pingStreamId, FrameFlags.PING, new Uint8Array(0));
             this.socket.send(pingFrame);
-            console.log('[NgGoRpcClient] Sent PING to server');
-            
+            if (this.enableLogging) {
+                console.log('[NgGoRpcClient] Sent PING to server');
+            }
+
             // Clear any existing timeout
             if (this.pongTimeoutId !== null) {
                 clearTimeout(this.pongTimeoutId);
             }
-            
+
             // Start watchdog timeout - close socket if no PONG arrives within 5 seconds
             this.pongTimeoutId = setTimeout(() => {
                 console.warn('[NgGoRpcClient] No PONG received within timeout, closing connection');
@@ -280,7 +301,9 @@ export class NgGoRpcClient {
         if (this.socket && this.connected) {
             const pongFrame = encodeFrame(this.pingStreamId, FrameFlags.PONG, new Uint8Array(0));
             this.socket.send(pongFrame);
-            console.log('[NgGoRpcClient] Sent PONG to server');
+            if (this.enableLogging) {
+                console.log('[NgGoRpcClient] Sent PONG to server');
+            }
         }
     }
 
@@ -354,13 +377,17 @@ export class NgGoRpcClient {
         const headersFrame = encodeFrame(streamId, FrameFlags.HEADERS, headersPayload);
         this.socket.send(headersFrame);
 
-        console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${methodPath}`);
+        if (this.enableLogging) {
+            console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${methodPath}`);
+        }
 
         // Send DATA frame with request payload (with EOS flag for unary calls)
         const dataFrame = encodeFrame(streamId, FrameFlags.DATA | FrameFlags.EOS, data);
         this.socket.send(dataFrame);
 
-        console.log(`[NgGoRpcClient] Sending DATA for stream ${streamId}, size: ${data.length} bytes`);
+        if (this.enableLogging) {
+            console.log(`[NgGoRpcClient] Sending DATA for stream ${streamId}, size: ${data.length} bytes`);
+        }
 
         // Return an Observable with proper teardown logic for cancellation
         return new Observable<Uint8Array>(observer => {
@@ -381,7 +408,9 @@ export class NgGoRpcClient {
 
                     const rstFrame = encodeFrame(streamId, FrameFlags.RST_STREAM, cancelPayload);
                     this.socket.send(rstFrame);
-                    console.log(`[NgGoRpcClient] Sent RST_STREAM (CANCEL) for stream ${streamId}`);
+                    if (this.enableLogging) {
+                        console.log(`[NgGoRpcClient] Sent RST_STREAM (CANCEL) for stream ${streamId}`);
+                    }
                 }
             };
         });
