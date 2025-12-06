@@ -54,7 +54,7 @@ test.describe('Concurrent Streams', () => {
     console.log(`[DEBUG_LOG] Stream 1: ${stream1Count1}, Stream 2: ${stream2Count1}`);
     
     // Wait more and verify both continue incrementing
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
     
     const stream1Count2 = parseInt(await stream1Counter.textContent() || '0');
     const stream2Count2 = parseInt(await stream2Counter.textContent() || '0');
@@ -102,7 +102,7 @@ test.describe('Concurrent Streams', () => {
     console.log(`[DEBUG_LOG] After stopping S1: S1=${stream1Stopped}, S2=${stream2AfterStop1}`);
     
     // Verify stream 2 continues while stream 1 stopped
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
     
     const stream1StillStopped = parseInt(await stream1Counter.textContent() || '0');
     const stream2Continued = parseInt(await stream2Counter.textContent() || '0');

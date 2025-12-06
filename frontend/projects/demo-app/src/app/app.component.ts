@@ -53,7 +53,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.transport = new WebSocketRpcTransport(this.rpcClient);
 
     // Connect with automatic reconnection
-    const wsUrl = `ws://${window.location.hostname}:8080/ws`;
+    // Use the same host/port as the page, allowing Nginx to proxy /ws to the backend
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
     this.rpcClient.connect(wsUrl, true);
 
     // Monitor connection status with periodic checks

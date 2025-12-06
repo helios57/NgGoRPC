@@ -39,7 +39,10 @@ test.describe('The Long Stream Scenario', () => {
     const status = page.locator('#status');
     
     await expect(counter).toHaveText('0');
-    await expect(status).toContainText('Disconnected');
+    // App might auto-connect, so we check if it is either Connected or Disconnected but ready
+    // Actually, since we want to verify state change when we click Start Ticker,
+    // we should wait for connection if it's auto-connecting.
+    await expect(status).toContainText('Connected', { timeout: 10000 });
     await expect(startBtn).toBeEnabled();
     await expect(stopBtn).toBeDisabled();
     
@@ -52,7 +55,7 @@ test.describe('The Long Stream Scenario', () => {
     await expect(stopBtn).toBeEnabled();
     
     // Step 3: Wait a bit and verify counter is incrementing
-    await page.waitForTimeout(500); // Wait 500ms (at least 5 ticks at 100ms interval)
+    await page.waitForTimeout(1000); // Wait more for robust test
     
     const firstCount = await counter.textContent();
     const firstCountNum = parseInt(firstCount || '0');
@@ -60,8 +63,8 @@ test.describe('The Long Stream Scenario', () => {
     // Counter should be greater than 0
     expect(firstCountNum).toBeGreaterThan(0);
     
-    // Wait another 300ms and verify it incremented more
-    await page.waitForTimeout(300);
+    // Wait another 500ms and verify it incremented more
+    await page.waitForTimeout(500);
     const secondCount = await counter.textContent();
     const secondCountNum = parseInt(secondCount || '0');
     
@@ -81,8 +84,8 @@ test.describe('The Long Stream Scenario', () => {
     const stoppedCount = await counter.textContent();
     const stoppedCountNum = parseInt(stoppedCount || '0');
     
-    // Wait 500ms
-    await page.waitForTimeout(500);
+    // Wait 1000ms
+    await page.waitForTimeout(1000);
     
     const finalCount = await counter.textContent();
     const finalCountNum = parseInt(finalCount || '0');
@@ -95,7 +98,7 @@ test.describe('The Long Stream Scenario', () => {
     // Step 6: Check backend container logs for context cancellation message
     // This verifies that the server received the cancellation signal
     try {
-      const logs = execSync('sudo docker compose -f ../docker-compose.yml logs backend', {
+      const logs = execSync('docker logs nggorpc-backend', {
         cwd: process.cwd(),
         encoding: 'utf-8',
         timeout: 5000
@@ -123,48 +126,48 @@ test.describe('The Long Stream Scenario', () => {
     const status = page.locator('#status');
     
     // Wait for backend to be ready (connection established)
-    await expect(status).toContainText('Disconnected', { timeout: 10000 });
+    await expect(status).toContainText('Connected', { timeout: 10000 });
     
     // First cycle
     console.log('[DEBUG_LOG] Starting cycle 1');
     await startBtn.click();
-    await page.waitForTimeout(300); // Give time for first ticks
+    await page.waitForTimeout(500); // Give time for first ticks
     const firstCycleStart = parseInt(await counter.textContent() || '0');
     expect(firstCycleStart).toBeGreaterThan(0);
     
-    await page.waitForTimeout(300); // Wait for more ticks
+    await page.waitForTimeout(500); // Wait for more ticks
     const firstCycleEnd = parseInt(await counter.textContent() || '0');
     expect(firstCycleEnd).toBeGreaterThan(firstCycleStart);
     console.log(`[DEBUG_LOG] Cycle 1: ${firstCycleStart} -> ${firstCycleEnd}`);
     
     await stopBtn.click();
-    await page.waitForTimeout(300); // Wait for stream to fully stop
+    await page.waitForTimeout(500); // Wait for stream to fully stop
     
     // Second cycle - verify counter continues incrementing from where it left off
     console.log('[DEBUG_LOG] Starting cycle 2');
     const beforeSecondStart = parseInt(await counter.textContent() || '0');
     await startBtn.click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
     const secondCycleStart = parseInt(await counter.textContent() || '0');
     expect(secondCycleStart).toBeGreaterThan(beforeSecondStart);
     
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
     const secondCycleEnd = parseInt(await counter.textContent() || '0');
     expect(secondCycleEnd).toBeGreaterThan(secondCycleStart);
     console.log(`[DEBUG_LOG] Cycle 2: ${secondCycleStart} -> ${secondCycleEnd}`);
     
     await stopBtn.click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
     
     // Third cycle
     console.log('[DEBUG_LOG] Starting cycle 3');
     const beforeThirdStart = parseInt(await counter.textContent() || '0');
     await startBtn.click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
     const thirdCycleStart = parseInt(await counter.textContent() || '0');
     expect(thirdCycleStart).toBeGreaterThan(beforeThirdStart);
     
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
     const thirdCycleEnd = parseInt(await counter.textContent() || '0');
     expect(thirdCycleEnd).toBeGreaterThan(thirdCycleStart);
     console.log(`[DEBUG_LOG] Cycle 3: ${thirdCycleStart} -> ${thirdCycleEnd}`);

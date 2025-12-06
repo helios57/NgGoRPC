@@ -50,7 +50,7 @@ test.describe('Network Resilience Scenario', () => {
     // Step 2: Stop the backend container to simulate crash
     console.log('[DEBUG_LOG] Step 2: Stopping backend container');
     try {
-      execSync('sudo docker compose -f ../docker-compose.yml stop backend', {
+      execSync('docker stop nggorpc-backend', {
         cwd: process.cwd(),
         timeout: 10000
       });
@@ -90,7 +90,7 @@ test.describe('Network Resilience Scenario', () => {
     // Step 4: Restart the backend
     console.log('[DEBUG_LOG] Step 4: Starting backend container');
     try {
-      execSync('sudo docker compose -f ../docker-compose.yml start backend', {
+      execSync('docker start nggorpc-backend', {
         cwd: process.cwd(),
         timeout: 30000
       });
@@ -144,7 +144,7 @@ test.describe('Network Resilience Scenario', () => {
     
     // Stop backend first
     console.log('[DEBUG_LOG] Stopping backend for unavailable test');
-    execSync('sudo docker compose -f ../docker-compose.yml stop backend', {
+    execSync('docker stop nggorpc-backend', {
       cwd: process.cwd(),
       timeout: 10000
     });
@@ -169,7 +169,7 @@ test.describe('Network Resilience Scenario', () => {
     
     // Restart backend for cleanup
     console.log('[DEBUG_LOG] Restarting backend for cleanup');
-    execSync('sudo docker compose -f ../docker-compose.yml start backend', {
+    execSync('docker start nggorpc-backend', {
       cwd: process.cwd(),
       timeout: 30000
     });

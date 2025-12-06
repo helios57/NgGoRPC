@@ -41,14 +41,10 @@ test.describe('Unary RPC (SayHello)', () => {
     // Click Say Hello button
     await sayHelloBtn.click();
     
-    // Wait for response
-    await expect(greetingResponse).toBeVisible({ timeout: 5000 });
+    // Wait for response and verify message
+    await expect(greetingResponse).toHaveText('Hello, World!', { timeout: 5000 });
     
-    // Verify response message
-    const responseText = await greetingResponse.textContent();
-    expect(responseText).toBe('Hello, World!');
-    
-    console.log(`[DEBUG_LOG] ✓ Received response: ${responseText}`);
+    console.log(`[DEBUG_LOG] ✓ Received response: Hello, World!`);
   });
 
   test('should successfully call SayHello with custom name', async ({ page }) => {
@@ -65,14 +61,10 @@ test.describe('Unary RPC (SayHello)', () => {
     // Click Say Hello button
     await sayHelloBtn.click();
     
-    // Wait for response
-    await expect(greetingResponse).toBeVisible({ timeout: 5000 });
+    // Wait for response and verify message
+    await expect(greetingResponse).toHaveText('Hello, Angular!', { timeout: 5000 });
     
-    // Verify response message
-    const responseText = await greetingResponse.textContent();
-    expect(responseText).toBe('Hello, Angular!');
-    
-    console.log(`[DEBUG_LOG] ✓ Received response: ${responseText}`);
+    console.log(`[DEBUG_LOG] ✓ Received response: Hello, Angular!`);
   });
 
   test('should handle multiple sequential unary calls', async ({ page }) => {
@@ -86,21 +78,21 @@ test.describe('Unary RPC (SayHello)', () => {
     await nameInput.clear();
     await nameInput.fill('Alice');
     await sayHelloBtn.click();
-    await expect(greetingResponse).toContainText('Hello, Alice!', { timeout: 5000 });
+    await expect(greetingResponse).toHaveText('Hello, Alice!', { timeout: 5000 });
     console.log('[DEBUG_LOG] ✓ First call completed');
     
     // Second call
     await nameInput.clear();
     await nameInput.fill('Bob');
     await sayHelloBtn.click();
-    await expect(greetingResponse).toContainText('Hello, Bob!', { timeout: 5000 });
+    await expect(greetingResponse).toHaveText('Hello, Bob!', { timeout: 5000 });
     console.log('[DEBUG_LOG] ✓ Second call completed');
     
     // Third call
     await nameInput.clear();
     await nameInput.fill('Charlie');
     await sayHelloBtn.click();
-    await expect(greetingResponse).toContainText('Hello, Charlie!', { timeout: 5000 });
+    await expect(greetingResponse).toHaveText('Hello, Charlie!', { timeout: 5000 });
     console.log('[DEBUG_LOG] ✓ Third call completed');
     
     console.log('[DEBUG_LOG] ✓ All sequential calls completed successfully');
@@ -119,14 +111,10 @@ test.describe('Unary RPC (SayHello)', () => {
     // Click Say Hello button
     await sayHelloBtn.click();
     
-    // Wait for response (should still work with empty string)
-    await expect(greetingResponse).toBeVisible({ timeout: 5000 });
+    // Wait for response and verify message
+    await expect(greetingResponse).toHaveText('Hello, !', { timeout: 5000 });
     
-    // Verify response message (server should handle empty name)
-    const responseText = await greetingResponse.textContent();
-    expect(responseText).toBe('Hello, !');
-    
-    console.log(`[DEBUG_LOG] ✓ Empty name handled: ${responseText}`);
+    console.log(`[DEBUG_LOG] ✓ Empty name handled: Hello, !`);
   });
 
   test('should handle special characters in name', async ({ page }) => {
@@ -143,13 +131,9 @@ test.describe('Unary RPC (SayHello)', () => {
     // Click Say Hello button
     await sayHelloBtn.click();
     
-    // Wait for response
-    await expect(greetingResponse).toBeVisible({ timeout: 5000 });
+    // Wait for response and verify message
+    await expect(greetingResponse).toHaveText(`Hello, ${specialName}!`, { timeout: 5000 });
     
-    // Verify response message
-    const responseText = await greetingResponse.textContent();
-    expect(responseText).toBe(`Hello, ${specialName}!`);
-    
-    console.log(`[DEBUG_LOG] ✓ Special characters handled: ${responseText}`);
+    console.log(`[DEBUG_LOG] ✓ Special characters handled`);
   });
 });
