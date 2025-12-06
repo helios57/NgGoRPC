@@ -490,7 +490,9 @@ func TestGracefulShutdown(t *testing.T) {
 			receivedRstStream = true
 			t.Logf("Received RST_STREAM for stream %d during shutdown", frame.StreamID)
 			// Close the connection gracefully after receiving RST_STREAM to allow server shutdown to complete
-			conn.Close(websocket.StatusNormalClosure, "shutdown acknowledged")
+			if err := conn.Close(websocket.StatusNormalClosure, "shutdown acknowledged"); err != nil {
+				t.Logf("Failed to close connection: %v", err)
+			}
 			break
 		}
 	}
@@ -616,7 +618,11 @@ func TestMetadataHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Start a stream
 	streamID := uint32(1)
@@ -737,7 +743,11 @@ func TestFrameSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Send HEADERS frame (should be accepted)
 	streamID := uint32(1)
@@ -845,7 +855,11 @@ func TestOversizedHeadersFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Create oversized HEADERS payload (2KB, exceeds 1KB limit)
 	oversizedHeaders := "path: /test.Service/TestMethod\n"
@@ -928,7 +942,11 @@ func TestMalformedFrames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to dial WebSocket: %v", err)
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+		defer func() {
+			if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+				t.Logf("Failed to close connection: %v", err)
+			}
+		}()
 
 		// Send a frame with only 8 bytes (1 byte short of header)
 		incompleteFrame := make([]byte, 8)
@@ -957,7 +975,11 @@ func TestMalformedFrames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to dial WebSocket: %v", err)
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+		defer func() {
+			if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+				t.Logf("Failed to close connection: %v", err)
+			}
+		}()
 
 		// Send a text frame instead of binary
 		textMessage := "This should be binary but is text"
@@ -985,7 +1007,11 @@ func TestMalformedFrames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to dial WebSocket: %v", err)
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+		defer func() {
+			if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+				t.Logf("Failed to close connection: %v", err)
+			}
+		}()
 
 		// Create a frame that declares 1000 bytes but only has 10 bytes
 		malformedFrame := make([]byte, 19) // 9 header + 10 payload
