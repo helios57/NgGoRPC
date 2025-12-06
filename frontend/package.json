@@ -4,7 +4,8 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
-    "build": "ng build",
+    "prebuild": "ng build client",
+    "build": "ng build demo-app",
     "watch": "ng build --watch --configuration development",
     "test": "jest",
     "build:lib": "ng build client",
@@ -34,6 +35,6 @@
     "ng-packagr": "^19.2.0",
     "ts-jest": "^29.4.6",
     "ts-proto": "^2.2.5",
-    "typescript": "~5.6.2"
+    "typescript": "~5.8.3"
   }
 }

@@ -17,7 +17,7 @@ COPY frontend/ ./
 RUN npm run build:lib
 
 # Build the demo application
-RUN npm run build -- demo-app --configuration production
+RUN npm run build -- --configuration production
 
 # Production stage with nginx
 FROM nginx:alpine

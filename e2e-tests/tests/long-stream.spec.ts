@@ -126,34 +126,51 @@ test.describe('The Long Stream Scenario', () => {
     await expect(status).toContainText('Disconnected', { timeout: 10000 });
     
     // First cycle
+    console.log('[DEBUG_LOG] Starting cycle 1');
     await startBtn.click();
-    await expect(async () => {
-      const count = parseInt(await counter.textContent() || '0');
-      expect(count).toBeGreaterThan(0);
-    }).toPass({ timeout: 2000 });
-    const firstCycleCount = parseInt(await counter.textContent() || '0');
-    await stopBtn.click();
-    await page.waitForTimeout(200); // Wait for stream to stop
+    await page.waitForTimeout(300); // Give time for first ticks
+    const firstCycleStart = parseInt(await counter.textContent() || '0');
+    expect(firstCycleStart).toBeGreaterThan(0);
     
-    // Second cycle
-    await startBtn.click();
-    await expect(async () => {
-      const count = parseInt(await counter.textContent() || '0');
-      expect(count).toBeGreaterThan(0);
-    }).toPass({ timeout: 2000 });
-    const secondCycleCount = parseInt(await counter.textContent() || '0');
+    await page.waitForTimeout(300); // Wait for more ticks
+    const firstCycleEnd = parseInt(await counter.textContent() || '0');
+    expect(firstCycleEnd).toBeGreaterThan(firstCycleStart);
+    console.log(`[DEBUG_LOG] Cycle 1: ${firstCycleStart} -> ${firstCycleEnd}`);
+    
     await stopBtn.click();
-    await page.waitForTimeout(200); // Wait for stream to stop
+    await page.waitForTimeout(300); // Wait for stream to fully stop
+    
+    // Second cycle - verify counter continues incrementing from where it left off
+    console.log('[DEBUG_LOG] Starting cycle 2');
+    const beforeSecondStart = parseInt(await counter.textContent() || '0');
+    await startBtn.click();
+    await page.waitForTimeout(300);
+    const secondCycleStart = parseInt(await counter.textContent() || '0');
+    expect(secondCycleStart).toBeGreaterThan(beforeSecondStart);
+    
+    await page.waitForTimeout(300);
+    const secondCycleEnd = parseInt(await counter.textContent() || '0');
+    expect(secondCycleEnd).toBeGreaterThan(secondCycleStart);
+    console.log(`[DEBUG_LOG] Cycle 2: ${secondCycleStart} -> ${secondCycleEnd}`);
+    
+    await stopBtn.click();
+    await page.waitForTimeout(300);
     
     // Third cycle
+    console.log('[DEBUG_LOG] Starting cycle 3');
+    const beforeThirdStart = parseInt(await counter.textContent() || '0');
     await startBtn.click();
-    await expect(async () => {
-      const count = parseInt(await counter.textContent() || '0');
-      expect(count).toBeGreaterThan(0);
-    }).toPass({ timeout: 2000 });
-    const thirdCycleCount = parseInt(await counter.textContent() || '0');
+    await page.waitForTimeout(300);
+    const thirdCycleStart = parseInt(await counter.textContent() || '0');
+    expect(thirdCycleStart).toBeGreaterThan(beforeThirdStart);
+    
+    await page.waitForTimeout(300);
+    const thirdCycleEnd = parseInt(await counter.textContent() || '0');
+    expect(thirdCycleEnd).toBeGreaterThan(thirdCycleStart);
+    console.log(`[DEBUG_LOG] Cycle 3: ${thirdCycleStart} -> ${thirdCycleEnd}`);
+    
     await stopBtn.click();
     
-    console.log(`[DEBUG_LOG] Multiple cycles completed: ${firstCycleCount}, ${secondCycleCount}, ${thirdCycleCount}`);
+    console.log(`[DEBUG_LOG] Multiple cycles completed successfully`);
   });
 });
