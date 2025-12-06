@@ -1,89 +1,85 @@
-/**
- * Unit tests for Angular providers (providers.ts)
- *
- * Note: These tests verify that NgGoRpcClient can be instantiated with various configurations.
- * Full Angular DI testing requires an Angular test environment.
- */
-
+import { TestBed } from '@angular/core/testing';
+import { NgZone } from '@angular/core';
+import {
+  provideNgGoRpc,
+  NG_GO_RPC_CLIENT,
+  NG_GO_RPC_CONFIG,
+} from './providers';
 import { NgGoRpcClient, NgGoRpcConfig } from './client';
 
-// Mock NgZone for testing
-class MockNgZone {
-  runOutsideAngular<T>(fn: () => T): T {
-    return fn();
-  }
-
-  run<T>(fn: () => T): T {
-    return fn();
-  }
-}
-
-describe('NgGoRPC Providers', () => {
-
-  describe('NgGoRpcClient instantiation', () => {
-    it('should create a working client with default config', () => {
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const client = new NgGoRpcClient(mockNgZone);
-
-      expect(client).toBeDefined();
-      expect(client).toBeInstanceOf(NgGoRpcClient);
-      expect(typeof client.connect).toBe('function');
-      expect(typeof client.disconnect).toBe('function');
-      expect(typeof client.request).toBe('function');
+describe('NgGoRpc Providers', () => {
+  it('should provide NgGoRpcClient without config', () => {
+    TestBed.configureTestingModule({
+      providers: [provideNgGoRpc()],
     });
 
-    it('should create a working client with all config options', () => {
-      const config: NgGoRpcConfig = {
-        pingInterval: 25000,
-        baseReconnectDelay: 500,
-        maxReconnectDelay: 20000,
-        maxFrameSize: 2 * 1024 * 1024,
-        enableLogging: true
-      };
+    const client = TestBed.inject(NG_GO_RPC_CLIENT);
+    expect(client).toBeInstanceOf(NgGoRpcClient);
+  });
 
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const client = new NgGoRpcClient(mockNgZone, config);
-
-      expect(client).toBeDefined();
-      expect(client).toBeInstanceOf(NgGoRpcClient);
+  it('should provide NgGoRpcClient with default config when none is provided', () => {
+    TestBed.configureTestingModule({
+      providers: [provideNgGoRpc()],
     });
 
-    it('should create client with partial config', () => {
-      const config: NgGoRpcConfig = {
-        pingInterval: 15000,
-        enableLogging: false
-      };
+    const client = TestBed.inject(NG_GO_RPC_CLIENT);
+    // Check some default values by accessing private properties
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['pingInterval']).toBe(30000);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['enableLogging']).toBe(false);
+  });
 
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const client = new NgGoRpcClient(mockNgZone, config);
+  it('should provide NgGoRpcClient and NgGoRpcConfig with a config', () => {
+    const config: NgGoRpcConfig = {
+      pingInterval: 15000,
+      enableLogging: true,
+    };
 
-      expect(client).toBeDefined();
-      expect(client).toBeInstanceOf(NgGoRpcClient);
+    TestBed.configureTestingModule({
+      providers: [provideNgGoRpc(config)],
     });
 
-    it('should create client with maxFrameSize config', () => {
-      const config: NgGoRpcConfig = {
-        maxFrameSize: 8 * 1024 * 1024
-      };
+    const client = TestBed.inject(NG_GO_RPC_CLIENT);
+    const injectedConfig = TestBed.inject(NG_GO_RPC_CONFIG);
 
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const client = new NgGoRpcClient(mockNgZone, config);
+    expect(client).toBeInstanceOf(NgGoRpcClient);
+    expect(injectedConfig).toEqual(config);
+  });
 
-      expect(client).toBeDefined();
-      expect(client).toBeInstanceOf(NgGoRpcClient);
+  it('should configure the client with the provided config', () => {
+    const config: NgGoRpcConfig = {
+      pingInterval: 15000,
+      baseReconnectDelay: 2000,
+      maxReconnectDelay: 60000,
+      enableLogging: true,
+    };
+
+    TestBed.configureTestingModule({
+      providers: [provideNgGoRpc(config)],
     });
 
-    it('should create client with reconnect config', () => {
-      const config: NgGoRpcConfig = {
-        baseReconnectDelay: 500,
-        maxReconnectDelay: 10000
-      };
+    const client = TestBed.inject(NG_GO_RPC_CLIENT);
 
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const client = new NgGoRpcClient(mockNgZone, config);
+    // Check if the client has the configured values by accessing private properties
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['pingInterval']).toBe(config.pingInterval);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['baseReconnectDelay']).toBe(config.baseReconnectDelay);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['maxReconnectDelay']).toBe(config.maxReconnectDelay);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['enableLogging']).toBe(config.enableLogging);
+  });
 
-      expect(client).toBeDefined();
-      expect(client).toBeInstanceOf(NgGoRpcClient);
+  it('should inject NgZone into the client', () => {
+    TestBed.configureTestingModule({
+      providers: [provideNgGoRpc()],
     });
+
+    const client = TestBed.inject(NG_GO_RPC_CLIENT);
+    const ngZone = TestBed.inject(NgZone);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any)['ngZone']).toBe(ngZone);
   });
 });

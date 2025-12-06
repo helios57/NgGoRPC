@@ -29,8 +29,9 @@
           "defaultConfiguration": "production"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular-devkit/build-angular:karma",
           "options": {
+            "karmaConfig": "projects/client/karma.conf.js",
             "tsConfig": "projects/client/tsconfig.spec.json",
             "polyfills": [
               "zone.js",
@@ -142,7 +143,7 @@
           "builder": "@angular/build:extract-i18n"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular-devkit/build-angular:karma",
           "options": {
             "polyfills": [
               "zone.js",

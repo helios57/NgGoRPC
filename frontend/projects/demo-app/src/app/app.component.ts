@@ -1,4 +1,4 @@
-import { Component, NgZone, OnDestroy, OnInit, signal, effect } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit, signal, effect, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
@@ -46,7 +46,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private stream2Subscription?: Subscription;
   private statusCheckInterval?: ReturnType<typeof setInterval>;
 
-  constructor(private ngZone: NgZone) {}
+  private ngZone = inject(NgZone);
 
   ngOnInit(): void {
     // Initialize RPC client

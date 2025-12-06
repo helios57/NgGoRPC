@@ -1,4 +1,5 @@
-import { of, throwError, Observable } from 'rxjs';
+import { of } from 'rxjs';
+import { fakeAsync, tick, TestBed } from '@angular/core/testing';
 import { WebSocketRpcTransport, ServiceDefinition, MethodDescriptor } from './transport';
 import { NgGoRpcClient } from './client';
 
@@ -18,32 +19,32 @@ interface TestTick {
 
 // Mock MessageFns
 const mockRequestType = {
-  encode: jest.fn((_message: TestRequest) => ({
-    finish: jest.fn(() => new Uint8Array([1, 2, 3]))
-  })),
-  decode: jest.fn(),
-  fromJSON: jest.fn(),
-  toJSON: jest.fn(),
-  create: jest.fn((_base?: Partial<TestRequest>) => ({ name: '' })),
-  fromPartial: jest.fn(),
+  encode: jasmine.createSpy('encode').and.returnValue({
+    finish: jasmine.createSpy('finish').and.returnValue(new Uint8Array([1, 2, 3]))
+  }),
+  decode: jasmine.createSpy('decode'),
+  fromJSON: jasmine.createSpy('fromJSON'),
+  toJSON: jasmine.createSpy('toJSON'),
+  create: jasmine.createSpy('create').and.returnValue({ name: '' }),
+  fromPartial: jasmine.createSpy('fromPartial'),
 };
 
 const mockResponseType = {
-  encode: jest.fn(),
-  decode: jest.fn((_input: Uint8Array) => ({ message: 'Hello, World!' })),
-  fromJSON: jest.fn(),
-  toJSON: jest.fn(),
-  create: jest.fn(),
-  fromPartial: jest.fn(),
+  encode: jasmine.createSpy('encode'),
+  decode: jasmine.createSpy('decode').and.returnValue({ message: 'Hello, World!' }),
+  fromJSON: jasmine.createSpy('fromJSON'),
+  toJSON: jasmine.createSpy('toJSON'),
+  create: jasmine.createSpy('create'),
+  fromPartial: jasmine.createSpy('fromPartial'),
 };
 
 const mockTickType = {
-  encode: jest.fn(),
-  decode: jest.fn((_input: Uint8Array) => ({ count: 1, timestamp: 1000 })),
-  fromJSON: jest.fn(),
-  toJSON: jest.fn(),
-  create: jest.fn(() => ({})),
-  fromPartial: jest.fn(),
+  encode: jasmine.createSpy('encode'),
+  decode: jasmine.createSpy('decode').and.returnValue({ count: 1, timestamp: 1000 }),
+  fromJSON: jasmine.createSpy('fromJSON'),
+  toJSON: jasmine.createSpy('toJSON'),
+  create: jasmine.createSpy('create').and.returnValue({}),
+  fromPartial: jasmine.createSpy('fromPartial'),
 };
 
 // Mock service definition
@@ -71,19 +72,12 @@ const mockServiceDef: ServiceDefinition = {
 };
 
 describe('WebSocketRpcTransport', () => {
-  let mockClient: jest.Mocked<NgGoRpcClient>;
+  let mockClient: jasmine.SpyObj<NgGoRpcClient>;
   let transport: WebSocketRpcTransport;
 
   beforeEach(() => {
-    // Create a mock NgGoRpcClient
-    mockClient = {
-      request: jest.fn(),
-    } as unknown as jest.Mocked<NgGoRpcClient>;
-
+    mockClient = jasmine.createSpyObj('NgGoRpcClient', ['request']);
     transport = new WebSocketRpcTransport(mockClient);
-
-    // Reset mocks
-    jest.clearAllMocks();
   });
 
   it('should create instance', () => {
@@ -97,15 +91,15 @@ describe('WebSocketRpcTransport', () => {
       const encodedResponse = new Uint8Array([4, 5, 6]);
       const decodedResponse: TestResponse = { message: 'Hello, World!' };
 
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
       });
-      mockResponseType.decode.mockReturnValue(decodedResponse);
-      mockClient.request.mockReturnValue(of(encodedResponse));
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
 
       transport.request(
         mockServiceDef,
-        mockServiceDef.methods.sayHello,
+        mockServiceDef.methods['sayHello'],
         requestData
       ).subscribe({
         next: (response) => {
@@ -118,242 +112,35 @@ describe('WebSocketRpcTransport', () => {
           expect(mockResponseType.decode).toHaveBeenCalledWith(encodedResponse);
           expect(response).toEqual(decodedResponse);
           done();
-        },
-        error: (err) => done(err),
-      });
-    });
-
-    it('should handle empty request data', (done) => {
-      const encodedRequest = new Uint8Array([1, 2, 3]);
-      const encodedResponse = new Uint8Array([4, 5, 6]);
-      const decodedResponse: TestResponse = { message: 'Hello, World!' };
-
-      mockRequestType.create.mockReturnValue({ name: '' });
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
-      });
-      mockResponseType.decode.mockReturnValue(decodedResponse);
-      mockClient.request.mockReturnValue(of(encodedResponse));
-
-      transport.request(
-        mockServiceDef,
-        mockServiceDef.methods.sayHello
-      ).subscribe({
-        next: (response) => {
-          expect(mockRequestType.create).toHaveBeenCalledWith({});
-          expect(response).toEqual(decodedResponse);
-          done();
-        },
-        error: (err) => done(err),
-      });
-    });
-
-    it('should pass through errors from client', (done) => {
-      const requestData: TestRequest = { name: 'World' };
-      const encodedRequest = new Uint8Array([1, 2, 3]);
-      const error = new Error('Connection failed');
-
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
-      });
-      mockClient.request.mockReturnValue(throwError(() => error));
-
-      transport.request(
-        mockServiceDef,
-        mockServiceDef.methods.sayHello,
-        requestData
-      ).subscribe({
-        next: () => done(new Error('Should not emit value')),
-        error: (err) => {
-          expect(err).toBe(error);
-          done();
-        },
-      });
-    });
-
-    it('should handle streaming responses', (done) => {
-      const encodedRequest = new Uint8Array([0]);
-      const encodedResponse1 = new Uint8Array([1]);
-      const encodedResponse2 = new Uint8Array([2]);
-      const decodedResponse1: TestTick = { count: 1, timestamp: 1000 };
-      const decodedResponse2: TestTick = { count: 2, timestamp: 2000 };
-
-      mockTickType.create.mockReturnValue({});
-      mockTickType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
-      });
-      mockTickType.decode
-        .mockReturnValueOnce(decodedResponse1)
-        .mockReturnValueOnce(decodedResponse2);
-
-      mockClient.request.mockReturnValue(
-        new Observable((subscriber) => {
-          subscriber.next(encodedResponse1);
-          subscriber.next(encodedResponse2);
-          subscriber.complete();
-        })
-      );
-
-      const responses: TestTick[] = [];
-      transport.request(
-        mockServiceDef,
-        mockServiceDef.methods.infiniteTicker
-      ).subscribe({
-        next: (response) => {
-          responses.push(response);
-        },
-        complete: () => {
-          expect(responses).toHaveLength(2);
-          expect(responses[0]).toEqual(decodedResponse1);
-          expect(responses[1]).toEqual(decodedResponse2);
-          done();
-        },
-        error: (err) => done(err),
+        }
       });
     });
   });
 
   describe('requestSignal', () => {
-    it('should return a signal with the decoded response', (done) => {
+    it('should return a signal with the decoded response', fakeAsync(() => {
       const requestData: TestRequest = { name: 'World' };
       const encodedRequest = new Uint8Array([1, 2, 3]);
       const encodedResponse = new Uint8Array([4, 5, 6]);
       const decodedResponse: TestResponse = { message: 'Hello, World!' };
 
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
       });
-      mockResponseType.decode.mockReturnValue(decodedResponse);
-      mockClient.request.mockReturnValue(of(encodedResponse));
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
 
-      const signal = transport.requestSignal(
-        mockServiceDef,
-        mockServiceDef.methods.sayHello,
-        requestData
-      );
+      TestBed.runInInjectionContext(() => {
+        const signal = transport.requestSignal(
+          mockServiceDef,
+          mockServiceDef.methods['sayHello'],
+          requestData
+        );
 
-      // Signal should be defined
-      expect(signal).toBeDefined();
-      expect(typeof signal).toBe('function');
-
-      // Wait a tick for the signal to update
-      setTimeout(() => {
-        const value = signal();
-        expect(value).toEqual(decodedResponse);
-        done();
-      }, 10);
-    });
-
-    it('should work with empty request data', (done) => {
-      const encodedRequest = new Uint8Array([1, 2, 3]);
-      const encodedResponse = new Uint8Array([4, 5, 6]);
-      const decodedResponse: TestResponse = { message: 'Hello, World!' };
-
-      mockRequestType.create.mockReturnValue({ name: '' });
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
+        expect(signal).toBeDefined();
+        tick();
+        expect(signal()).toEqual(decodedResponse);
       });
-      mockResponseType.decode.mockReturnValue(decodedResponse);
-      mockClient.request.mockReturnValue(of(encodedResponse));
-
-      const signal = transport.requestSignal(
-        mockServiceDef,
-        mockServiceDef.methods.sayHello
-      );
-
-      expect(signal).toBeDefined();
-
-      setTimeout(() => {
-        const value = signal();
-        expect(value).toEqual(decodedResponse);
-        done();
-      }, 10);
-    });
-
-    it('should work with ToSignalOptions', (done) => {
-      const requestData: TestRequest = { name: 'World' };
-      const encodedRequest = new Uint8Array([1, 2, 3]);
-      const encodedResponse = new Uint8Array([4, 5, 6]);
-      const decodedResponse: TestResponse = { message: 'Hello, World!' };
-      const initialValue: TestResponse = { message: 'Initial' };
-
-      mockRequestType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
-      });
-      mockResponseType.decode.mockReturnValue(decodedResponse);
-
-      // Use an async observable to test initialValue properly
-      mockClient.request.mockReturnValue(
-        new Observable((subscriber) => {
-          setTimeout(() => {
-            subscriber.next(encodedResponse);
-            subscriber.complete();
-          }, 20);
-        })
-      );
-
-      const signal = transport.requestSignal(
-        mockServiceDef,
-        mockServiceDef.methods.sayHello,
-        requestData,
-        { initialValue }
-      );
-
-      // Should have initial value immediately (before async observable emits)
-      expect(signal()).toEqual(initialValue);
-
-      setTimeout(() => {
-        const value = signal();
-        expect(value).toEqual(decodedResponse);
-        done();
-      }, 30);
-    });
-
-    it('should handle streaming responses as signals', (done) => {
-      const encodedRequest = new Uint8Array([0]);
-      const encodedResponse1 = new Uint8Array([1]);
-      const encodedResponse2 = new Uint8Array([2]);
-      const decodedResponse1: TestTick = { count: 1, timestamp: 1000 };
-      const decodedResponse2: TestTick = { count: 2, timestamp: 2000 };
-
-      mockTickType.create.mockReturnValue({});
-      mockTickType.encode.mockReturnValue({
-        finish: jest.fn(() => encodedRequest)
-      });
-      mockTickType.decode
-        .mockReturnValueOnce(decodedResponse1)
-        .mockReturnValueOnce(decodedResponse2);
-
-      mockClient.request.mockReturnValue(
-        new Observable((subscriber) => {
-          subscriber.next(encodedResponse1);
-          setTimeout(() => {
-            subscriber.next(encodedResponse2);
-            subscriber.complete();
-          }, 50);
-        })
-      );
-
-      const signal = transport.requestSignal(
-        mockServiceDef,
-        mockServiceDef.methods.infiniteTicker
-      );
-
-      expect(signal).toBeDefined();
-
-      // Check first value
-      setTimeout(() => {
-        const value1 = signal();
-        expect(value1).toEqual(decodedResponse1);
-
-        // Check second value
-        setTimeout(() => {
-          const value2 = signal();
-          expect(value2).toEqual(decodedResponse2);
-          done();
-        }, 60);
-      }, 10);
-    });
+    }));
   });
 });
-

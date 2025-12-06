@@ -10,7 +10,8 @@ import {NgGoRpcClient} from './client';
 export interface MessageFns<T> {
   encode(message: T, writer?: unknown): { finish(): Uint8Array };
 
-  decode(input: Uint8Array | ArrayBuffer, length?: number): T;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  decode(input: any, length?: number): T;
 
   fromJSON(object: unknown): T;
 

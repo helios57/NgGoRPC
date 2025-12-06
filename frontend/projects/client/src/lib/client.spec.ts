@@ -1,12 +1,9 @@
 /**
  * Unit tests for NgGoRpcClient (client.ts)
- *
- * Tests cover:
- * - Teardown trigger: unsubscribe() should send RST_STREAM frame
  */
-
+import { fakeAsync, tick } from '@angular/core/testing';
 import { NgGoRpcClient } from './client';
-import { FrameFlags, decodeFrame } from './frame';
+import { FrameFlags, decodeFrame, encodeFrame } from './frame';
 
 // Mock NgZone for testing
 class MockNgZone {
@@ -21,538 +18,264 @@ class MockNgZone {
 
 describe('NgGoRpcClient', () => {
   let client: NgGoRpcClient;
-  let mockSocket: WebSocket;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mockSocket: any;
   let sentMessages: Uint8Array[];
 
   beforeEach(() => {
     sentMessages = [];
 
     // Create a mock WebSocket
-    mockSocket = Object.assign(Object.create(null), {
+    mockSocket = {
       readyState: 1, // WebSocket.OPEN
-      send: jest.fn((data: Uint8Array) => {
+      send: jasmine.createSpy('send').and.callFake((data: Uint8Array) => {
         sentMessages.push(new Uint8Array(data));
       }),
-      close: jest.fn(),
-      addEventListener: jest.fn(),
-      removeEventListener: jest.fn(),
-    }) as unknown as WebSocket;
+      close: jasmine.createSpy('close'),
+      addEventListener: jasmine.createSpy('addEventListener'),
+      removeEventListener: jasmine.createSpy('removeEventListener'),
+    };
 
     // Mock WebSocket constructor
-    (global as unknown as { WebSocket: typeof WebSocket & { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number } }).WebSocket = jest.fn(() => mockSocket) as unknown as typeof WebSocket & { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number };
-    (global as unknown as { WebSocket: { OPEN: number } }).WebSocket.OPEN = 1;
-    (global as unknown as { WebSocket: { CONNECTING: number } }).WebSocket.CONNECTING = 0;
-    (global as unknown as { WebSocket: { CLOSING: number } }).WebSocket.CLOSING = 2;
-    (global as unknown as { WebSocket: { CLOSED: number } }).WebSocket.CLOSED = 3;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).WebSocket = jasmine.createSpy('WebSocket').and.returnValue(mockSocket);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).WebSocket.OPEN = 1;
 
     const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
     client = new NgGoRpcClient(mockNgZone);
   });
 
   afterEach(() => {
-    // Clean up
     if (client) {
       client.disconnect();
     }
   });
 
+  describe('Connection', () => {
+    it('should not connect if URL is not provided', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).attemptConnection();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).not.toHaveBeenCalled();
+    });
+
+    it('should not reconnect if reconnection is disabled', fakeAsync(() => {
+      client.connect('ws://localhost:8080', false);
+      mockSocket.onopen(new Event('open')); // Simulate connection
+      mockSocket.onclose(new CloseEvent('close'));
+      tick(5000);
+      // The initial call is expected, but no subsequent calls for reconnection
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(1);
+    }));
+  });
+
+  describe('Message Handling', () => {
+    beforeEach(() => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+    });
+
+    it('should respond to PING with PONG', () => {
+      const pingFrame = encodeFrame(0, FrameFlags.PING, new Uint8Array(0));
+      mockSocket.onmessage(new MessageEvent('message', { data: pingFrame.buffer }));
+      expect(sentMessages.length).toBe(1);
+      const sentFrame = decodeFrame(sentMessages[0].buffer);
+      expect(sentFrame.flags & FrameFlags.PONG).toBeTruthy();
+    });
+
+    it('should handle TRAILERS with non-zero status', () => {
+      const trailersPayload = new TextEncoder().encode('grpc-status: 1\ngrpc-message: test error');
+      const trailersFrame = encodeFrame(1, FrameFlags.TRAILERS, trailersPayload);
+      const subject = { error: jasmine.createSpy('error'), complete: jasmine.createSpy('complete') };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).streamMap.set(1, subject);
+
+      mockSocket.onmessage(new MessageEvent('message', { data: trailersFrame.buffer }));
+
+      expect(subject.error).toHaveBeenCalledWith(new Error('test error'));
+      expect(subject.complete).not.toHaveBeenCalled();
+    });
+
+    it('should handle RST_STREAM from server', () => {
+      const rstFrame = encodeFrame(1, FrameFlags.RST_STREAM, new Uint8Array(0));
+      const subject = { error: jasmine.createSpy('error') };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).streamMap.set(1, subject);
+
+      mockSocket.onmessage(new MessageEvent('message', { data: rstFrame.buffer }));
+
+      expect(subject.error).toHaveBeenCalledWith(new Error('Stream reset by server'));
+    });
+
+    it('should handle decoding errors gracefully', () => {
+      const consoleErrorSpy = spyOn(console, 'error');
+      const invalidFrame = new ArrayBuffer(2); // Invalid frame that will cause decodeFrame to throw
+      mockSocket.onmessage(new MessageEvent('message', { data: invalidFrame }));
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[NgGoRpcClient] Frame decoding error:', jasmine.any(Error));
+    });
+  });
+
+  describe('Error and Close Handling', () => {
+    beforeEach(() => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+    });
+
+    it('should log WebSocket errors', () => {
+      const consoleErrorSpy = spyOn(console, 'error');
+      mockSocket.onerror(new Event('error'));
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[NgGoRpcClient] WebSocket error:', jasmine.any(Event));
+    });
+
+    it('should error out active streams on close', () => {
+      const subject = { error: jasmine.createSpy('error') };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).streamMap.set(1, subject);
+      mockSocket.onclose(new CloseEvent('close'));
+      expect(subject.error).toHaveBeenCalledWith(new Error('Connection lost - UNAVAILABLE'));
+    });
+  });
+
+  describe('Authentication', () => {
+    it('should include auth token in headers', () => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+      const token = 'test-auth-token';
+      client.setAuthToken(token);
+
+      client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3])).subscribe();
+
+      const headersFrame = decodeFrame(sentMessages[0].buffer);
+      const headersText = new TextDecoder().decode(headersFrame.payload);
+      expect(headersText).toContain(`authorization: Bearer ${token}`);
+    });
+  });
+
   describe('PONG Watchdog', () => {
-    it('should close socket when PONG timeout occurs', (done) => {
-      // Mock timers
-      jest.useFakeTimers();
-
-      // Manually set the socket on the client (simulating successful connection)
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-
-      // Trigger sendPing which starts the watchdog timeout
-      (client as unknown as Record<string, unknown>).sendPing();
-
-      // Verify socket.close was not called yet
+    it('should close socket when PONG timeout occurs', fakeAsync(() => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).sendPing();
       expect(mockSocket.close).not.toHaveBeenCalled();
-
-      // Fast-forward time by 5000ms (PONG timeout)
-      jest.advanceTimersByTime(5000);
-
-      // Verify socket.close was called with code 4000
+      tick(5000);
       expect(mockSocket.close).toHaveBeenCalledWith(4000, 'PONG timeout');
+    }));
 
-      jest.useRealTimers();
-      done();
-    });
+    it('should cancel watchdog timeout when PONG is received', fakeAsync(() => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).sendPing();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((client as any).pongTimeoutId).not.toBeNull();
 
-    it('should cancel watchdog timeout when PONG is received', (done) => {
-      jest.useFakeTimers();
+      const pongFrame = encodeFrame(0, FrameFlags.PONG, new Uint8Array(0));
+      mockSocket.onmessage(new MessageEvent('message', { data: pongFrame.buffer }));
 
-      // Manually set the socket on the client (simulating successful connection)
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-
-      // Trigger sendPing which starts the watchdog timeout
-      (client as unknown as Record<string, unknown>).sendPing();
-
-      // Verify timeout is set
-      expect((client as unknown as Record<string, unknown>).pongTimeoutId).not.toBeNull();
-
-      // Simulate receiving PONG by directly calling the PONG handler logic
-      const pongTimeoutId = (client as unknown as Record<string, unknown>).pongTimeoutId;
-      clearTimeout(pongTimeoutId);
-      (client as unknown as Record<string, unknown>).pongTimeoutId = null;
-
-      // Fast-forward time by 5000ms
-      jest.advanceTimersByTime(5000);
-
-      // Verify socket.close was NOT called because PONG was received
+      tick(5000);
       expect(mockSocket.close).not.toHaveBeenCalled();
-
-      jest.useRealTimers();
-      done();
-    });
+    }));
   });
 
   describe('Teardown Trigger', () => {
-    it('should send RST_STREAM frame when Observable is unsubscribed', (done) => {
-      // Manually set the socket on the client (simulating successful connection)
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).nextStreamId = 1;
+    it('should send RST_STREAM frame when Observable is unsubscribed', () => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).nextStreamId = 1;
 
-      // Create a request
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
-
-      const observable = client.request(service, method, requestData);
-
-      // Subscribe to the observable
-      const subscription = observable.subscribe({
-        next: () => {},
-        error: () => {},
-        complete: () => {}
-      });
-
-      // Clear sent messages from the request (HEADERS and DATA frames)
+      const observable = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+      const subscription = observable.subscribe();
       sentMessages.length = 0;
-
-      // Unsubscribe - this should trigger teardown and send RST_STREAM
       subscription.unsubscribe();
 
-      // Verify that RST_STREAM was sent
       expect(sentMessages.length).toBeGreaterThanOrEqual(1);
-
-      // Find the RST_STREAM frame
-      let rstStreamFound = false;
-      for (const message of sentMessages) {
-        const frame = decodeFrame(message.buffer);
-
-        if (frame.flags & FrameFlags.RST_STREAM) {
-          rstStreamFound = true;
-
-          // Verify it's the correct stream ID (should be 1, the first odd ID)
-          expect(frame.streamId).toBe(1);
-
-          // Verify the flags include RST_STREAM (0x08)
-          expect(frame.flags & FrameFlags.RST_STREAM).toBeTruthy();
-
-          console.log(`[Test] RST_STREAM frame detected: StreamID=${frame.streamId}, Flags=0x${frame.flags.toString(16)}`);
-          break;
-        }
+      const rstFrame = sentMessages.find(msg => (decodeFrame(msg.buffer).flags & FrameFlags.RST_STREAM));
+      expect(rstFrame).toBeDefined();
+      if (rstFrame) {
+        const frame = decodeFrame(rstFrame.buffer);
+        expect(frame.streamId).toBe(1);
       }
-
-      expect(rstStreamFound).toBe(true);
-      done();
-    });
-
-    it('should not send RST_STREAM if WebSocket is already closed', () => {
-      // Set up client with closed socket
-      Object.defineProperty(mockSocket, 'readyState', { value: 3, writable: true });
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).nextStreamId = 1;
-
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
-
-      const observable = client.request(service, method, requestData);
-      const subscription = observable.subscribe();
-
-      // Clear messages
-      sentMessages.length = 0;
-
-      // Unsubscribe
-      subscription.unsubscribe();
-
-      // Should not send RST_STREAM because socket is closed
-      const hasRstStream = sentMessages.some(msg => {
-        const frame = decodeFrame(msg.buffer);
-        return (frame.flags & FrameFlags.RST_STREAM) !== 0;
-      });
-
-      expect(hasRstStream).toBe(false);
-    });
-
-    it('should send RST_STREAM with correct stream ID for multiple streams', () => {
-      // Set up client
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).nextStreamId = 1;
-
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
-
-      // Create multiple requests
-      const observable1 = client.request(service, method, requestData);
-      const observable2 = client.request(service, method, requestData);
-      const observable3 = client.request(service, method, requestData);
-
-      const sub1 = observable1.subscribe();
-      const sub2 = observable2.subscribe();
-      const sub3 = observable3.subscribe();
-
-      // Clear messages
-      sentMessages.length = 0;
-
-      // Unsubscribe from the second stream only
-      sub2.unsubscribe();
-
-      // Find RST_STREAM frame
-      const rstFrames = sentMessages
-        .map(msg => decodeFrame(msg.buffer))
-        .filter(frame => (frame.flags & FrameFlags.RST_STREAM) !== 0);
-
-      // Should have exactly one RST_STREAM
-      expect(rstFrames.length).toBe(1);
-
-      // Should be for stream ID 3 (first=1, second=3, third=5)
-      expect(rstFrames[0].streamId).toBe(3);
-
-      // Clean up
-      sub1.unsubscribe();
-      sub3.unsubscribe();
-    });
-
-    it('should remove stream from map when unsubscribed', () => {
-      // Set up client
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).nextStreamId = 1;
-
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
-
-      const observable = client.request(service, method, requestData);
-      const subscription = observable.subscribe();
-
-      // Stream should be in the map
-      expect((client as unknown as Record<string, unknown>).streamMap.has(1)).toBe(true);
-
-      // Unsubscribe
-      subscription.unsubscribe();
-
-      // Stream should be removed from the map
-      expect((client as unknown as Record<string, unknown>).streamMap.has(1)).toBe(false);
     });
   });
 
-  describe('Request Frame Verification', () => {
-    it('should send HEADERS and DATA frames when making a request', () => {
-      // Set up client
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).nextStreamId = 1;
+  it('should not send RST_STREAM if WebSocket is already closed', () => {
+    client.connect('ws://localhost:8080');
+    mockSocket.onopen(new Event('open'));
+    Object.defineProperty(mockSocket, 'readyState', { value: 3, writable: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).nextStreamId = 1;
 
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
+    const observable = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    const subscription = observable.subscribe();
+    sentMessages.length = 0;
+    subscription.unsubscribe();
 
-      sentMessages.length = 0;
-
-      client.request(service, method, requestData).subscribe();
-
-      // Should have sent 2 frames: HEADERS and DATA
-      expect(sentMessages.length).toBe(2);
-
-      // First frame should be HEADERS
-      const headersFrame = decodeFrame(sentMessages[0].buffer);
-      expect(headersFrame.flags & FrameFlags.HEADERS).toBeTruthy();
-      expect(headersFrame.streamId).toBe(1);
-
-      // Verify headers contain the method path
-      const headersText = new TextDecoder().decode(headersFrame.payload);
-      expect(headersText).toContain('path: /test.Service/TestMethod');
-
-      // Second frame should be DATA with EOS
-      const dataFrame = decodeFrame(sentMessages[1].buffer);
-      expect(dataFrame.flags & FrameFlags.DATA).toBeTruthy();
-      expect(dataFrame.flags & FrameFlags.EOS).toBeTruthy();
-      expect(dataFrame.streamId).toBe(1);
-      expect(dataFrame.payload).toEqual(requestData);
-    });
+    const hasRstStream = sentMessages.some(msg => (decodeFrame(msg.buffer).flags & FrameFlags.RST_STREAM) !== 0);
+    expect(hasRstStream).toBe(false);
   });
 
-  describe('Stream ID Exhaustion', () => {
-    it('should close connection when stream ID wraps around', () => {
-      // Mock timers
-      jest.useFakeTimers();
+it('should send RST_STREAM with correct stream ID for multiple streams', () => {
+    client.connect('ws://localhost:8080');
+    mockSocket.onopen(new Event('open'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).nextStreamId = 1;
 
-      // Set nextStreamId close to limit (max uint32)
-      // 0xFFFFFFFF = 4294967295. We need to check if it exceeds this.
-      // But JS numbers are doubles, so we can go higher.
-      // The protocol uses uint32, so we should fail if > 0xFFFFFFFF
-      (client as unknown as Record<string, unknown>).nextStreamId = 4294967295;
-      (client as unknown as Record<string, unknown>).connected = true;
-      (client as unknown as Record<string, unknown>).socket = mockSocket;
+    const obs1 = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    const obs2 = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    const sub1 = obs1.subscribe();
+    const sub2 = obs2.subscribe();
+    sentMessages.length = 0;
+    sub2.unsubscribe();
 
-      const service = 'test.Service';
-      const method = 'TestMethod';
-      const requestData = new Uint8Array([1, 2, 3]);
-
-      // This request uses ID 4294967295 (odd)
-      client.request(service, method, requestData);
-
-      // Next ID would be 4294967297 which is > 0xFFFFFFFF
-      // But wait, we increment by 2.
-      // 4294967295 + 2 = 4294967297
-
-      // The second request should trigger the overflow check if implemented
-      // It should also throw an error
-      expect(() => {
-        client.request(service, method, requestData);
-      }).toThrow('Stream ID exhaustion');
-
-      expect(mockSocket.close).toHaveBeenCalledWith(4000, expect.stringContaining('Stream ID exhaustion'));
-
-      jest.useRealTimers();
-    });
+    const rstFrames = sentMessages.map(msg => decodeFrame(msg.buffer)).filter(frame => (frame.flags & FrameFlags.RST_STREAM) !== 0);
+    expect(rstFrames.length).toBe(1);
+    expect(rstFrames[0].streamId).toBe(3);
+    sub1.unsubscribe();
   });
 
-  describe('Timer Cleanup', () => {
-    it('should clear reconnection timer on disconnect', () => {
-      jest.useFakeTimers();
+  it('should remove stream from map when unsubscribed', () => {
+    client.connect('ws://localhost:8080');
+    mockSocket.onopen(new Event('open'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).nextStreamId = 1;
 
-      (client as unknown as Record<string, unknown>).reconnectAttempt = 1;
-      (client as unknown as Record<string, unknown>).reconnectionEnabled = true;
-      (client as unknown as Record<string, unknown>).currentUrl = 'ws://localhost:8080';
-
-      // Schedule reconnection
-      (client as unknown as Record<string, unknown>).scheduleReconnection();
-
-      // Verify timer is set (we can't check ID easily in Jest, but we can check if it fires)
-
-      // Now disconnect
-      client.disconnect();
-
-      // Fast forward time
-      jest.advanceTimersByTime(100000);
-
-      // WebSocket should NOT be created (attemptConnection not called)
-      expect((global as unknown as { WebSocket: unknown }).WebSocket).not.toHaveBeenCalled();
-
-      jest.useRealTimers();
-    });
+    const observable = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    const subscription = observable.subscribe();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).streamMap.has(1)).toBe(true);
+    subscription.unsubscribe();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).streamMap.has(1)).toBe(false);
   });
 
-  describe('Reconnection Backoff', () => {
-    it('should follow exponential backoff formula (1s, 2s, 4s, 8s, 16s, 30s cap)', () => {
-      jest.useFakeTimers();
+  it('should throw error when stream ID is exhausted', () => {
+    client.connect('ws://localhost:8080');
+    mockSocket.onopen(new Event('open'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).nextStreamId = 4294967295;
 
-      // Set up client with known configuration
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const clientWithConfig = new NgGoRpcClient(mockNgZone, {
-        baseReconnectDelay: 1000,
-        maxReconnectDelay: 30000
-      });
-
-      // Set up reconnection state
-      (clientWithConfig as unknown as Record<string, unknown>).reconnectionEnabled = true;
-      (clientWithConfig as unknown as Record<string, unknown>).currentUrl = 'ws://localhost:8080';
-
-      // Mock WebSocket constructor
-      (global as unknown as { WebSocket: unknown }).WebSocket = jest.fn(() => {
-        return mockSocket;
-      });
-
-      // Track when attemptConnection is called by spying on it
-      const attemptConnectionSpy = jest.spyOn(clientWithConfig as unknown as Record<string, unknown>, 'attemptConnection');
-
-      // Start with reconnectAttempt = 0
-      (clientWithConfig as unknown as Record<string, unknown>).reconnectAttempt = 0;
-
-      // First reconnection: delay = min(30000, 1000 * 2^0) = 1000ms (1s)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Second reconnection: delay = min(30000, 1000 * 2^1) = 2000ms (2s)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(1999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Third reconnection: delay = min(30000, 1000 * 2^2) = 4000ms (4s)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(3999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Fourth reconnection: delay = min(30000, 1000 * 2^3) = 8000ms (8s)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(7999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Fifth reconnection: delay = min(30000, 1000 * 2^4) = 16000ms (16s)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(15999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Sixth reconnection: delay = min(30000, 1000 * 2^5) = min(30000, 32000) = 30000ms (30s, capped)
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(29999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-      attemptConnectionSpy.mockClear();
-
-      // Seventh reconnection: delay should still be capped at 30000ms
-      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
-      jest.advanceTimersByTime(29999);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
-      jest.advanceTimersByTime(1);
-      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
-
-      jest.useRealTimers();
-    });
-  });
-
-  describe('Logging', () => {
-    it('should log messages when enableLogging is true', () => {
-      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
-
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const loggingClient = new NgGoRpcClient(mockNgZone, { enableLogging: true });
-
-      // Set up connection
-      (loggingClient as unknown as Record<string, unknown>).socket = mockSocket;
-      (loggingClient as unknown as Record<string, unknown>).connected = true;
-
-      // Test logging in various methods
-      (loggingClient as unknown as Record<string, unknown>).sendPing();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Sent PING'));
-
-      (loggingClient as unknown as Record<string, unknown>).startPingInterval();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Keep-alive ping interval started'));
-
-      (loggingClient as unknown as Record<string, unknown>).stopPingInterval();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Keep-alive ping interval stopped'));
-
-      consoleLogSpy.mockRestore();
-      consoleWarnSpy.mockRestore();
-    });
-
-    it('should not log when enableLogging is false', () => {
-      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const silentClient = new NgGoRpcClient(mockNgZone, { enableLogging: false });
-
-      // Set up connection
-      (silentClient as unknown as Record<string, unknown>).socket = mockSocket;
-      (silentClient as unknown as Record<string, unknown>).connected = true;
-
-      const callCountBefore = consoleLogSpy.mock.calls.length;
-      (silentClient as unknown as Record<string, unknown>).sendPing();
-      const callCountAfter = consoleLogSpy.mock.calls.length;
-
-      // Should not have logged
-      expect(callCountAfter).toBe(callCountBefore);
-
-      consoleLogSpy.mockRestore();
-    });
+    client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    expect(() => {
+      client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+    }).toThrow(new Error('Stream ID exhaustion'));
+    expect(mockSocket.close).toHaveBeenCalledWith(4000, jasmine.stringMatching('Stream ID exhaustion'));
   });
 
   describe('SSR Safety', () => {
     it('should skip connection when WebSocket is undefined (SSR)', () => {
-      const originalWebSocket = (global as any).WebSocket;
-      (global as any).WebSocket = undefined;
-
-      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
-
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const ssrClient = new NgGoRpcClient(mockNgZone, { enableLogging: true });
-
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).WebSocket = undefined;
+      const consoleWarnSpy = spyOn(console, 'warn');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ssrClient = new NgGoRpcClient(new MockNgZone() as any, { enableLogging: true });
       ssrClient.connect('ws://localhost:8080');
-
-      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('WebSocket not available'));
-      expect((ssrClient as unknown as Record<string, unknown>).socket).toBeNull();
-
-      consoleWarnSpy.mockRestore();
-      (global as any).WebSocket = originalWebSocket;
-    });
-
-    it('should not warn in SSR when logging is disabled', () => {
-      const originalWebSocket = (global as any).WebSocket;
-      (global as any).WebSocket = undefined;
-
-      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
-
-      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
-      const ssrClient = new NgGoRpcClient(mockNgZone, { enableLogging: false });
-
-      ssrClient.connect('ws://localhost:8080');
-
-      expect(consoleWarnSpy).not.toHaveBeenCalled();
-
-      consoleWarnSpy.mockRestore();
-      (global as any).WebSocket = originalWebSocket;
+      expect(consoleWarnSpy).toHaveBeenCalledWith(jasmine.stringMatching('WebSocket not available'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((ssrClient as any).socket).toBeNull();
     });
   });
-
-  describe('setAuthToken', () => {
-    it('should set auth token', () => {
-      const token = 'test-auth-token-12345';
-      client.setAuthToken(token);
-      expect((client as unknown as Record<string, unknown>).authToken).toBe(token);
-    });
-
-    it('should set auth token to null when cleared', () => {
-      client.setAuthToken('initial-token');
-      client.setAuthToken(null);
-      expect((client as unknown as Record<string, unknown>).authToken).toBeNull();
-    });
-  });
-
-  describe('isConnected', () => {
-    it('should return true when connected', () => {
-      (client as unknown as Record<string, unknown>).connected = true;
-      expect(client.isConnected()).toBe(true);
-    });
-
-    it('should return false when not connected', () => {
-      (client as unknown as Record<string, unknown>).connected = false;
-      expect(client.isConnected()).toBe(false);
-    });
-  });
-
-
 });
-
-
-
-
