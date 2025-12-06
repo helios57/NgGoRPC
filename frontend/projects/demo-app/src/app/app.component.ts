@@ -2,7 +2,7 @@ import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
-import { Empty, Tick, HelloRequest, HelloResponse } from './generated/greeter';
+import { Empty, Tick, HelloRequest, HelloResponse, GreeterDefinition } from './generated/greeter';
 import { Subscription } from 'rxjs';
 import { map } from 'rxjs/operators';
 
@@ -10,6 +10,7 @@ import { map } from 'rxjs/operators';
   selector: 'app-root',
   imports: [CommonModule, FormsModule],
   templateUrl: './app.component.html',
+  standalone: true,
   styleUrl: './app.component.css'
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -53,7 +54,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.transport = new WebSocketRpcTransport(this.rpcClient);
 
     // Connect with automatic reconnection
-    const wsUrl = `ws://${window.location.hostname}:8080/ws`;
+    // Use the same host/port as the page, allowing Nginx to proxy /ws to the backend
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
     this.rpcClient.connect(wsUrl, true);
 
     // Monitor connection status with periodic checks
@@ -93,14 +96,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.tickCount = 0;
     this.lastTimestamp = '-';
 
-    // Encode empty request
-    const requestData = Empty.encode({}).finish();
-
-    // Call InfiniteTicker using the transport
+    // Call InfiniteTicker using the new typed API
     this.tickerSubscription = this.transport.request(
-      'greeter.Greeter',
-      'InfiniteTicker',
-      requestData
+      GreeterDefinition,
+      GreeterDefinition.methods.infiniteTicker
     ).pipe(
       map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({
@@ -137,12 +136,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.greetingError = '';
     this.greetingResponse = 'Loading...';
 
-    const requestData = HelloRequest.encode({ name: this.greetingName }).finish();
-
     this.transport.request(
-      'greeter.Greeter',
-      'SayHello',
-      requestData
+      GreeterDefinition,
+      GreeterDefinition.methods.sayHello,
+      { name: this.greetingName }
     ).pipe(
       map((data: Uint8Array) => HelloResponse.decode(data))
     ).subscribe({
@@ -170,12 +167,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.stream1Count = 0;
     this.stream1Active = true;
 
-    const requestData = Empty.encode({}).finish();
-
     this.stream1Subscription = this.transport.request(
-      'greeter.Greeter',
-      'InfiniteTicker',
-      requestData
+      GreeterDefinition,
+      GreeterDefinition.methods.infiniteTicker
     ).pipe(
       map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({
@@ -212,12 +206,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.stream2Count = 0;
     this.stream2Active = true;
 
-    const requestData = Empty.encode({}).finish();
-
     this.stream2Subscription = this.transport.request(
-      'greeter.Greeter',
-      'InfiniteTicker',
-      requestData
+      GreeterDefinition,
+      GreeterDefinition.methods.infiniteTicker
     ).pipe(
       map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({

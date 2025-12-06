@@ -680,3 +680,199 @@ func TestMetadataHandling(t *testing.T) {
 		t.Error("Expected to receive TRAILERS frame")
 	}
 }
+
+// TestFrameSizeLimit verifies that the server rejects frames exceeding MaxPayloadSize
+func TestFrameSizeLimit(t *testing.T) {
+	// Create server with a small MaxPayloadSize for testing (1KB)
+	maxSize := uint32(1024)
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     maxSize,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a simple unary service (handler won't be called)
+	desc := &grpc.ServiceDesc{
+		ServiceName: "test.Service",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "TestMethod",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					var req pb.HelloRequest
+					if err := dec(&req); err != nil {
+						return nil, err
+					}
+					return &pb.HelloResponse{Message: "OK"}, nil
+				},
+			},
+		},
+		Streams: []grpc.StreamDesc{},
+	}
+
+	server.RegisterService(desc, nil)
+
+	// Create test HTTP server
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	// Connect WebSocket client
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+	// Send HEADERS frame (should be accepted)
+	streamID := uint32(1)
+	headers := "path: /test.Service/TestMethod\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Create an oversized payload (2KB, exceeds 1KB limit)
+	oversizedPayload := make([]byte, maxSize+1024)
+	for i := range oversizedPayload {
+		oversizedPayload[i] = byte(i % 256)
+	}
+
+	// Manually construct a frame with oversized payload to bypass client-side validation
+	// The server should reject this during decodeFrame
+	dataFrame := encodeFrame(streamID, FlagDATA|FlagEOS, oversizedPayload)
+
+	// Send the oversized frame
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send oversized DATA frame: %v", err)
+	}
+
+	// The server should NOT respond with a normal response
+	// It should either close the connection or ignore the frame and log an error
+	// Let's verify that we don't get a successful response
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	receivedSuccessResponse := false
+	for i := 0; i < 5; i++ {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			// Connection closed or error - this is expected behavior
+			t.Logf("Connection closed or read error (expected): %v", err)
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, maxSize)
+		if err != nil {
+			// Frame decode error on client side
+			continue
+		}
+
+		// Check if we received a successful DATA response
+		if frame.Flags&FlagDATA != 0 {
+			receivedSuccessResponse = true
+		}
+
+		if frame.Flags&FlagEOS != 0 {
+			break
+		}
+	}
+
+	// We should NOT receive a successful response for an oversized frame
+	if receivedSuccessResponse {
+		t.Error("Server should not have processed the oversized frame")
+	}
+
+	t.Logf("Server correctly rejected or ignored oversized frame")
+}
+
+// TestOversizedHeadersFrame verifies that oversized HEADERS frames are rejected
+func TestOversizedHeadersFrame(t *testing.T) {
+	// Create server with a small MaxPayloadSize for testing (1KB)
+	maxSize := uint32(1024)
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     maxSize,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a simple unary service
+	desc := &grpc.ServiceDesc{
+		ServiceName: "test.Service",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "TestMethod",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					return &pb.HelloResponse{Message: "OK"}, nil
+				},
+			},
+		},
+		Streams: []grpc.StreamDesc{},
+	}
+
+	server.RegisterService(desc, nil)
+
+	// Create test HTTP server
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	// Connect WebSocket client
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+	// Create oversized HEADERS payload (2KB, exceeds 1KB limit)
+	oversizedHeaders := "path: /test.Service/TestMethod\n"
+	// Pad with many header fields to exceed limit
+	for i := 0; i < 100; i++ {
+		oversizedHeaders += fmt.Sprintf("x-custom-header-%d: %s\n", i, string(make([]byte, 20)))
+	}
+
+	streamID := uint32(1)
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(oversizedHeaders))
+
+	// Send the oversized HEADERS frame
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send oversized HEADERS frame: %v", err)
+	}
+
+	// The server should not process this stream
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	receivedResponse := false
+	for i := 0; i < 5; i++ {
+		msgType, _, err := conn.Read(readCtx)
+		if err != nil {
+			// Connection may be closed or error - expected
+			t.Logf("Connection closed or read error (expected): %v", err)
+			break
+		}
+
+		if msgType == websocket.MessageBinary {
+			receivedResponse = true
+			break
+		}
+	}
+
+	// We should not receive a successful response
+	if receivedResponse {
+		t.Error("Server should not have processed the oversized HEADERS frame")
+	}
+
+	t.Logf("Server correctly rejected or ignored oversized HEADERS frame")
+}

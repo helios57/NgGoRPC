@@ -1,6 +1,6 @@
 /**
  * Unit tests for NgGoRpcClient (client.ts)
- * 
+ *
  * Tests cover:
  * - Teardown trigger: unsubscribe() should send RST_STREAM frame
  */
@@ -13,7 +13,7 @@ class MockNgZone {
   runOutsideAngular(fn: Function) {
     return fn();
   }
-  
+
   run(fn: Function) {
     return fn();
   }
@@ -26,7 +26,7 @@ describe('NgGoRpcClient', () => {
 
   beforeEach(() => {
     sentMessages = [];
-    
+
     // Create a mock WebSocket
     mockSocket = {
       readyState: 1, // WebSocket.OPEN
@@ -60,7 +60,7 @@ describe('NgGoRpcClient', () => {
     it('should close socket when PONG timeout occurs', (done) => {
       // Mock timers
       jest.useFakeTimers();
-      
+
       // Manually set the socket on the client (simulating successful connection)
       (client as any).socket = mockSocket;
       (client as any).connected = true;
@@ -76,14 +76,14 @@ describe('NgGoRpcClient', () => {
 
       // Verify socket.close was called with code 4000
       expect(mockSocket.close).toHaveBeenCalledWith(4000, 'PONG timeout');
-      
+
       jest.useRealTimers();
       done();
     });
 
     it('should cancel watchdog timeout when PONG is received', (done) => {
       jest.useFakeTimers();
-      
+
       // Manually set the socket on the client (simulating successful connection)
       (client as any).socket = mockSocket;
       (client as any).connected = true;
@@ -104,7 +104,7 @@ describe('NgGoRpcClient', () => {
 
       // Verify socket.close was NOT called because PONG was received
       expect(mockSocket.close).not.toHaveBeenCalled();
-      
+
       jest.useRealTimers();
       done();
     });
@@ -144,16 +144,16 @@ describe('NgGoRpcClient', () => {
       let rstStreamFound = false;
       for (const message of sentMessages) {
         const frame = decodeFrame(message.buffer);
-        
+
         if (frame.flags & FrameFlags.RST_STREAM) {
           rstStreamFound = true;
-          
+
           // Verify it's the correct stream ID (should be 1, the first odd ID)
           expect(frame.streamId).toBe(1);
-          
+
           // Verify the flags include RST_STREAM (0x08)
           expect(frame.flags & FrameFlags.RST_STREAM).toBeTruthy();
-          
+
           console.log(`[Test] RST_STREAM frame detected: StreamID=${frame.streamId}, Flags=0x${frame.flags.toString(16)}`);
           break;
         }
@@ -350,6 +350,93 @@ describe('NgGoRpcClient', () => {
 
       // WebSocket should NOT be created (attemptConnection not called)
       expect((global as any).WebSocket).not.toHaveBeenCalled();
+
+      jest.useRealTimers();
+    });
+  });
+
+  describe('Reconnection Backoff', () => {
+    it('should follow exponential backoff formula (1s, 2s, 4s, 8s, 16s, 30s cap)', () => {
+      jest.useFakeTimers();
+
+      // Set up client with known configuration
+      const mockNgZone = new MockNgZone() as any;
+      const clientWithConfig = new NgGoRpcClient(mockNgZone, {
+        baseReconnectDelay: 1000,
+        maxReconnectDelay: 30000
+      });
+
+      // Set up reconnection state
+      (clientWithConfig as any).reconnectionEnabled = true;
+      (clientWithConfig as any).currentUrl = 'ws://localhost:8080';
+
+      // Mock WebSocket constructor to track calls
+      const wsConstructorCalls: number[] = [];
+      (global as any).WebSocket = jest.fn(() => {
+        wsConstructorCalls.push(Date.now());
+        return mockSocket;
+      });
+
+      // Track when attemptConnection is called by spying on it
+      const attemptConnectionSpy = jest.spyOn(clientWithConfig as any, 'attemptConnection');
+
+      // Start with reconnectAttempt = 0
+      (clientWithConfig as any).reconnectAttempt = 0;
+
+      // First reconnection: delay = min(30000, 1000 * 2^0) = 1000ms (1s)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Second reconnection: delay = min(30000, 1000 * 2^1) = 2000ms (2s)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(1999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Third reconnection: delay = min(30000, 1000 * 2^2) = 4000ms (4s)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(3999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Fourth reconnection: delay = min(30000, 1000 * 2^3) = 8000ms (8s)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(7999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Fifth reconnection: delay = min(30000, 1000 * 2^4) = 16000ms (16s)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(15999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Sixth reconnection: delay = min(30000, 1000 * 2^5) = min(30000, 32000) = 30000ms (30s, capped)
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(29999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
+      attemptConnectionSpy.mockClear();
+
+      // Seventh reconnection: delay should still be capped at 30000ms
+      (clientWithConfig as any).scheduleReconnection();
+      jest.advanceTimersByTime(29999);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
+      jest.advanceTimersByTime(1);
+      expect(attemptConnectionSpy).toHaveBeenCalledTimes(1);
 
       jest.useRealTimers();
     });

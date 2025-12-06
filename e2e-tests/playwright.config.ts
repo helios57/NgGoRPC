@@ -24,7 +24,7 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost:8352',
+    baseURL: process.env.BASE_URL || 'http://localhost:8352',
     
     /* Run tests in headless mode */
     headless: true,
@@ -50,7 +50,7 @@ export default defineConfig({
   /* Run your local dev server before starting the tests */
   webServer: {
     command: 'echo "Using Docker Compose for services"',
-    url: 'http://localhost:8352',
+    url: process.env.BASE_URL || 'http://localhost:8352',
     reuseExistingServer: true,
     timeout: 120 * 1000,
   },
