@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 
-	pb "github.com/nggorpc/wsgrpc/generated"
+	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
 )
 
 // TestIdleTimeout verifies that streams idle for longer than the configured timeout are forcibly closed
@@ -875,4 +875,142 @@ func TestOversizedHeadersFrame(t *testing.T) {
 	}
 
 	t.Logf("Server correctly rejected or ignored oversized HEADERS frame")
+}
+
+// TestMalformedFrames verifies that the server handles various malformed frames gracefully
+// without panicking and maintains connection stability or closes gracefully.
+func TestMalformedFrames(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a simple unary service
+	desc := &grpc.ServiceDesc{
+		ServiceName: "test.Service",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "TestMethod",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					return &pb.HelloResponse{Message: "OK"}, nil
+				},
+			},
+		},
+		Streams: []grpc.StreamDesc{},
+	}
+
+	server.RegisterService(desc, nil)
+
+	// Create test HTTP server
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	t.Run("frame with less than 9 bytes", func(t *testing.T) {
+		ctx := context.Background()
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("Failed to dial WebSocket: %v", err)
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+		// Send a frame with only 8 bytes (1 byte short of header)
+		incompleteFrame := make([]byte, 8)
+		if err := conn.Write(ctx, websocket.MessageBinary, incompleteFrame); err != nil {
+			t.Fatalf("Failed to send incomplete frame: %v", err)
+		}
+
+		// The server should handle this gracefully
+		// Try to send a valid frame afterwards to see if connection is still alive
+		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		// Read response - server may close connection or ignore the frame
+		_, _, err = conn.Read(readCtx)
+		if err != nil {
+			// Expected: server may close connection due to protocol error
+			t.Logf("Server closed connection after malformed frame (expected): %v", err)
+		} else {
+			t.Log("Server kept connection alive after malformed frame")
+		}
+	})
+
+	t.Run("text frame instead of binary", func(t *testing.T) {
+		ctx := context.Background()
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("Failed to dial WebSocket: %v", err)
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+		// Send a text frame instead of binary
+		textMessage := "This should be binary but is text"
+		if err := conn.Write(ctx, websocket.MessageText, []byte(textMessage)); err != nil {
+			t.Fatalf("Failed to send text frame: %v", err)
+		}
+
+		// The server should handle this gracefully
+		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		// Read response - server should close connection or ignore
+		_, _, err = conn.Read(readCtx)
+		if err != nil {
+			// Expected: server may close connection due to protocol error
+			t.Logf("Server closed connection after text frame (expected): %v", err)
+		} else {
+			t.Log("Server kept connection alive after text frame")
+		}
+	})
+
+	t.Run("frame declaring length larger than actual payload", func(t *testing.T) {
+		ctx := context.Background()
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("Failed to dial WebSocket: %v", err)
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+		// Create a frame that declares 1000 bytes but only has 10 bytes
+		malformedFrame := make([]byte, 19) // 9 header + 10 payload
+		// Flags: DATA
+		malformedFrame[0] = FlagDATA
+		// Stream ID: 1 (big-endian)
+		malformedFrame[1] = 0
+		malformedFrame[2] = 0
+		malformedFrame[3] = 0
+		malformedFrame[4] = 1
+		// Length: declare 1000 bytes (big-endian)
+		malformedFrame[5] = 0
+		malformedFrame[6] = 0
+		malformedFrame[7] = 0x03
+		malformedFrame[8] = 0xE8 // 1000 in hex
+		// Payload: only 10 bytes
+		for i := 9; i < 19; i++ {
+			malformedFrame[i] = byte(i)
+		}
+
+		if err := conn.Write(ctx, websocket.MessageBinary, malformedFrame); err != nil {
+			t.Fatalf("Failed to send malformed frame: %v", err)
+		}
+
+		// The server should handle this gracefully
+		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		// Read response - server should close connection or handle error
+		_, _, err = conn.Read(readCtx)
+		if err != nil {
+			// Expected: server may close connection due to protocol error
+			t.Logf("Server closed connection after length mismatch (expected): %v", err)
+		} else {
+			t.Log("Server kept connection alive after length mismatch")
+		}
+	})
+
+	t.Log("All malformed frame scenarios handled without panic")
 }

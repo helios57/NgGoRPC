@@ -386,18 +386,18 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[wsgrpc] Failed to accept WebSocket connection: %v", err)
 		return
 	}
-	defer conn.Close(websocket.StatusInternalError, "internal error")
+	defer func() { _ = conn.Close(websocket.StatusInternalError, "internal error") }()
 
 	log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
 
 	// Start processing frames in a goroutine
 	if err := s.handleConnection(r.Context(), conn); err != nil {
 		log.Printf("[wsgrpc] Connection error: %v", err)
-		conn.Close(websocket.StatusInternalError, err.Error())
+		_ = conn.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
 
-	conn.Close(websocket.StatusNormalClosure, "goodbye")
+	_ = conn.Close(websocket.StatusNormalClosure, "goodbye")
 }
 
 // handleConnection manages the lifecycle of a single WebSocket connection.
@@ -523,15 +523,15 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			methodInfo, ok := s.methods[methodPath]
 			s.mu.RUnlock()
 
- 		if !ok {
- 			log.Printf("[wsgrpc] Method not found: %s", methodPath)
- 			// Send RST_STREAM
- 			rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
- 			if err := wsConn.send(rstFrame); err != nil {
- 				log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)
- 			}
- 			continue
- 		}
+			if !ok {
+				log.Printf("[wsgrpc] Method not found: %s", methodPath)
+				// Send RST_STREAM
+				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
+				if err := wsConn.send(rstFrame); err != nil {
+					log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)
+				}
+				continue
+			}
 
 			// Create context with metadata derived from connection context
 			// This ensures cancellation propagates when connection closes

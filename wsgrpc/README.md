@@ -14,7 +14,7 @@ This library provides a WebSocket-based transport adapter for standard gRPC serv
 ## Installation
 
 ```bash
-go get github.com/nggorpc/wsgrpc
+go get github.com/helios57/NgGoRPC/wsgrpc
 ```
 
 ## Usage
@@ -23,7 +23,7 @@ go get github.com/nggorpc/wsgrpc
 package main
 
 import (
-    "github.com/nggorpc/wsgrpc/server"
+    "github.com/helios57/NgGoRPC/wsgrpc"
     pb "yourproject/generated/greeter"
 )
 
@@ -38,7 +38,7 @@ func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb
 }
 
 func main() {
-    srv := server.NewServer()
+    srv := wsgrpc.NewServer(wsgrpc.ServerOption{})
     pb.RegisterGreeterServer(srv, &greeterServer{})
     
     if err := srv.ListenAndServe(":8080", "/rpc"); err != nil {
@@ -61,7 +61,7 @@ To publish the Go module to a private git repository:
 
 1. **Ensure go.mod is Correct**:
    - Verify the module path in `go.mod` matches your repository URL
-   - Example: `module github.com/yourorg/wsgrpc`
+   - Example: `module github.com/helios57/NgGoRPC/wsgrpc`
 
 2. **Tag a Version**:
    ```bash
@@ -76,7 +76,7 @@ To publish the Go module to a private git repository:
 
 4. **Using in Other Projects**:
    ```bash
-   go get github.com/yourorg/wsgrpc@v1.0.0
+   go get github.com/helios57/NgGoRPC/wsgrpc@v1.0.0
    ```
 
 5. **For Private Repositories**:
@@ -88,7 +88,7 @@ To publish the Go module to a private git repository:
    git config --global url."git@github.com:".insteadOf "https://github.com/"
    
    # Set GOPRIVATE environment variable
-   export GOPRIVATE=github.com/yourorg/*
+   export GOPRIVATE=github.com/helios57/*
    ```
 
 ## License

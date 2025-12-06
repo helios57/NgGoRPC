@@ -1,4 +1,4 @@
-module github.com/nggorpc/wsgrpc
+module github.com/helios57/NgGoRPC/wsgrpc
 
 go 1.24.0
 

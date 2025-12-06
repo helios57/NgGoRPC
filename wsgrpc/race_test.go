@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 
-	pb "github.com/nggorpc/wsgrpc/generated"
+	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
 )
 
 // TestRaceCondition verifies that concurrent stream creation and deletion
@@ -63,7 +63,7 @@ func TestRaceCondition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "test complete") }()
 
 	// Number of concurrent streams to launch
 	numStreams := 100
@@ -79,26 +79,26 @@ func TestRaceCondition(t *testing.T) {
 			defer wg.Done()
 			streamID := uint32(id + 1)
 
- 		// Send HEADERS
- 		headers := "path: /greeter.Greeter/StreamGreet\n"
- 		headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+			// Send HEADERS
+			headers := "path: /greeter.Greeter/StreamGreet\n"
+			headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
 
- 		connMu.Lock()
- 		if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
- 			t.Errorf("Failed to write headers frame: %v", err)
- 		}
- 		connMu.Unlock()
+			connMu.Lock()
+			if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+				t.Errorf("Failed to write headers frame: %v", err)
+			}
+			connMu.Unlock()
 
- 		// Send DATA
- 		req := &pb.HelloRequest{Name: fmt.Sprintf("User%d", id)}
- 		data, _ := proto.Marshal(req)
- 		dataFrame := encodeFrame(streamID, FlagDATA, data)
+			// Send DATA
+			req := &pb.HelloRequest{Name: fmt.Sprintf("User%d", id)}
+			data, _ := proto.Marshal(req)
+			dataFrame := encodeFrame(streamID, FlagDATA, data)
 
- 		connMu.Lock()
- 		if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
- 			t.Errorf("Failed to write data frame: %v", err)
- 		}
- 		connMu.Unlock()
+			connMu.Lock()
+			if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+				t.Errorf("Failed to write data frame: %v", err)
+			}
+			connMu.Unlock()
 
 			// Sleep a tiny bit to allow some overlap
 			time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)

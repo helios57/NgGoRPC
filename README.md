@@ -89,13 +89,13 @@ npm install ./path/to/nggorpc-client-1.0.0.tgz
 To use NgGoRPC in your Go backend, add the library to your project:
 
 ```bash
-go get github.com/nggorpc/wsgrpc@latest
+go get github.com/helios57/NgGoRPC/wsgrpc@latest
 ```
 
 Or add it to your `go.mod`:
 
 ```go
-require github.com/nggorpc/wsgrpc v1.0.0
+require github.com/helios57/NgGoRPC/wsgrpc v1.0.0
 ```
 
 Then run:
@@ -175,7 +175,7 @@ go build ./...
 Add the dependency to your `go.mod`:
 
 ```go
-require github.com/nggorpc/wsgrpc v1.0.0
+require github.com/helios57/NgGoRPC/wsgrpc v1.0.0
 ```
 
 Then run:

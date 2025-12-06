@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package greeter;
 
-option go_package = "github.com/nggorpc/wsgrpc/generated/greeter";
+option go_package = "github.com/helios57/NgGoRPC/wsgrpc/generated/greeter";
 
 // The greeting service definition
 service Greeter {

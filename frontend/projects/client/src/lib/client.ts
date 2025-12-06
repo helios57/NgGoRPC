@@ -80,6 +80,14 @@ export class NgGoRpcClient {
             return;
         }
 
+        // SSR Safety: Check if WebSocket is available (browser-only)
+        if (typeof WebSocket === 'undefined') {
+            if (this.enableLogging) {
+                console.warn('[NgGoRpcClient] WebSocket not available (SSR environment). Connection skipped.');
+            }
+            return;
+        }
+
         // Run WebSocket operations outside Angular zone for better performance
         this.ngZone.runOutsideAngular(() => {
             this.socket = new WebSocket(this.currentUrl!);
