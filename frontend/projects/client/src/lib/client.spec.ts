@@ -292,4 +292,67 @@ describe('NgGoRpcClient', () => {
       expect(dataFrame.payload).toEqual(requestData);
     });
   });
+
+  describe('Stream ID Exhaustion', () => {
+    it('should close connection when stream ID wraps around', () => {
+      // Mock timers
+      jest.useFakeTimers();
+
+      // Set nextStreamId close to limit (max uint32)
+      // 0xFFFFFFFF = 4294967295. We need to check if it exceeds this.
+      // But JS numbers are doubles, so we can go higher.
+      // The protocol uses uint32, so we should fail if > 0xFFFFFFFF
+      (client as any).nextStreamId = 4294967295;
+      (client as any).connected = true;
+      (client as any).socket = mockSocket;
+
+      const service = 'test.Service';
+      const method = 'TestMethod';
+      const requestData = new Uint8Array([1, 2, 3]);
+
+      // This request uses ID 4294967295 (odd)
+      client.request(service, method, requestData);
+
+      // Next ID would be 4294967297 which is > 0xFFFFFFFF
+      // But wait, we increment by 2.
+      // 4294967295 + 2 = 4294967297
+
+      // The second request should trigger the overflow check if implemented
+      // It should also throw an error
+      expect(() => {
+        client.request(service, method, requestData);
+      }).toThrow('Stream ID exhaustion');
+
+      expect(mockSocket.close).toHaveBeenCalledWith(4000, expect.stringContaining('Stream ID exhaustion'));
+
+      jest.useRealTimers();
+    });
+  });
+
+  describe('Timer Cleanup', () => {
+    it('should clear reconnection timer on disconnect', () => {
+      jest.useFakeTimers();
+
+      (client as any).reconnectAttempt = 1;
+      (client as any).reconnectionEnabled = true;
+      (client as any).currentUrl = 'ws://localhost:8080';
+
+      // Schedule reconnection
+      (client as any).scheduleReconnection();
+
+      // Verify timer is set (we can't check ID easily in Jest, but we can check if it fires)
+
+      // Now disconnect
+      client.disconnect();
+
+      // Fast forward time
+      jest.advanceTimersByTime(100000);
+
+      // WebSocket should NOT be created (attemptConnection not called)
+      expect((global as any).WebSocket).not.toHaveBeenCalled();
+
+      jest.useRealTimers();
+    });
+  });
+
 });

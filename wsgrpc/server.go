@@ -549,14 +549,19 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				lastActivity: time.Now(),
 			}
 
+			wsConn.mu.Lock()
 			wsConn.streamMap[frame.StreamID] = stream
+			wsConn.mu.Unlock()
 
 			// Spawn handler goroutine
 			go s.handleStream(stream, methodInfo)
 
 		} else if frame.Flags&FlagDATA != 0 {
 			// Data frame - route to existing stream
+			wsConn.mu.Lock()
 			stream, ok := wsConn.streamMap[frame.StreamID]
+			wsConn.mu.Unlock()
+
 			if !ok {
 				log.Printf("[wsgrpc] Stream %d not found for DATA frame", frame.StreamID)
 				continue
@@ -653,7 +658,9 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 	log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, statusMsg)
 
 	// Clean up stream from map
+	stream.conn.mu.Lock()
 	delete(stream.conn.streamMap, stream.streamID)
+	stream.conn.mu.Unlock()
 }
 
 // ListenAndServe starts an HTTP server that handles WebSocket connections

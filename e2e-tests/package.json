@@ -5,10 +5,10 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:e2e": "docker-compose -f ../docker-compose.yml up -d --build && playwright test && docker-compose -f ../docker-compose.yml down",
-    "docker:up": "docker-compose -f ../docker-compose.yml up -d --build",
-    "docker:down": "docker-compose -f ../docker-compose.yml down",
-    "docker:logs": "docker-compose -f ../docker-compose.yml logs"
+    "test:e2e": "docker compose -f ../docker-compose.yml up -d --build && playwright test && docker compose -f ../docker-compose.yml down",
+    "docker:up": "docker compose -f ../docker-compose.yml up -d --build",
+    "docker:down": "docker compose -f ../docker-compose.yml down",
+    "docker:logs": "docker compose -f ../docker-compose.yml logs"
   },
   "keywords": [
     "e2e",

@@ -33,6 +33,7 @@ export class NgGoRpcClient {
     private connected = false;
     private streamMap: Map<number, Subject<Uint8Array>> = new Map();
     private nextStreamId = 1; // Client-initiated streams use odd numbers
+    private reconnectTimeoutId: any = null;
     private reconnectAttempt = 0;
     private readonly maxReconnectDelay: number;
     private readonly baseReconnectDelay: number;
@@ -224,7 +225,7 @@ export class NgGoRpcClient {
 
         this.reconnectAttempt++;
 
-        setTimeout(() => {
+        this.reconnectTimeoutId = setTimeout(() => {
             if (this.reconnectionEnabled && this.currentUrl) {
                 if (this.enableLogging) {
                     console.log('[NgGoRpcClient] Attempting reconnection...');
@@ -313,6 +314,13 @@ export class NgGoRpcClient {
     disconnect(): void {
         this.reconnectionEnabled = false; // Disable auto-reconnection
         this.stopPingInterval();
+
+        // Clear reconnection timer
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+        }
+
         if (this.socket) {
             this.socket.close();
             this.socket = null;
@@ -357,6 +365,15 @@ export class NgGoRpcClient {
         }
 
         // Generate a new odd-numbered stream ID
+        if (this.nextStreamId > 0xFFFFFFFF) {
+            // Stream ID exhaustion protection
+            // PROTOCOL.md: "Stream IDs MUST NOT be reused within the lifespan of a single WebSocket connection"
+            const errorMsg = 'Stream ID exhaustion';
+            console.error(`[NgGoRpcClient] ${errorMsg}`);
+            this.socket.close(4000, errorMsg);
+            throw new Error(errorMsg);
+        }
+
         const streamId = this.nextStreamId;
         this.nextStreamId += 2; // Increment by 2 to keep odd numbers
 

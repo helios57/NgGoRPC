@@ -8,9 +8,9 @@ import { execSync } from 'child_process';
  * 
  * Test Steps:
  * 1. Start a stream and verify data is flowing
- * 2. Execute `docker-compose stop backend` to simulate server crash
+ * 2. Execute `sudo docker compose stop backend` to simulate server crash
  * 3. Assert that the client UI displays a "Reconnecting..." or "UNAVAILABLE" state
- * 4. Execute `docker-compose start backend`
+ * 4. Execute `sudo docker compose start backend`
  * 5. Assert that the client automatically reconnects and a new stream can be initiated
  */
 
@@ -50,7 +50,7 @@ test.describe('Network Resilience Scenario', () => {
     // Step 2: Stop the backend container to simulate crash
     console.log('[DEBUG_LOG] Step 2: Stopping backend container');
     try {
-      execSync('docker-compose -f ../docker-compose.yml stop backend', {
+      execSync('sudo docker compose -f ../docker-compose.yml stop backend', {
         cwd: process.cwd(),
         timeout: 10000
       });
@@ -90,7 +90,7 @@ test.describe('Network Resilience Scenario', () => {
     // Step 4: Restart the backend
     console.log('[DEBUG_LOG] Step 4: Starting backend container');
     try {
-      execSync('docker-compose -f ../docker-compose.yml start backend', {
+      execSync('sudo docker compose -f ../docker-compose.yml start backend', {
         cwd: process.cwd(),
         timeout: 30000
       });
@@ -144,7 +144,7 @@ test.describe('Network Resilience Scenario', () => {
     
     // Stop backend first
     console.log('[DEBUG_LOG] Stopping backend for unavailable test');
-    execSync('docker-compose -f ../docker-compose.yml stop backend', {
+    execSync('sudo docker compose -f ../docker-compose.yml stop backend', {
       cwd: process.cwd(),
       timeout: 10000
     });
@@ -169,7 +169,7 @@ test.describe('Network Resilience Scenario', () => {
     
     // Restart backend for cleanup
     console.log('[DEBUG_LOG] Restarting backend for cleanup');
-    execSync('docker-compose -f ../docker-compose.yml start backend', {
+    execSync('sudo docker compose -f ../docker-compose.yml start backend', {
       cwd: process.cwd(),
       timeout: 30000
     });

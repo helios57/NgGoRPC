@@ -95,7 +95,7 @@ test.describe('The Long Stream Scenario', () => {
     // Step 6: Check backend container logs for context cancellation message
     // This verifies that the server received the cancellation signal
     try {
-      const logs = execSync('docker-compose -f ../docker-compose.yml logs backend', {
+      const logs = execSync('sudo docker compose -f ../docker-compose.yml logs backend', {
         cwd: process.cwd(),
         encoding: 'utf-8',
         timeout: 5000
