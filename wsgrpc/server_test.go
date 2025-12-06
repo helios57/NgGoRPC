@@ -73,7 +73,11 @@ func TestIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Start a stream
 	streamID := uint32(1)
@@ -250,7 +254,11 @@ func TestStreamIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Stream 1: Send HEADERS frame
 	stream1ID := uint32(1)
@@ -421,7 +429,11 @@ func TestGracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial WebSocket: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
 
 	// Start a stream
 	streamID := uint32(1)
