@@ -107,13 +107,10 @@ export class WebSocketRpcTransport {
     service: ServiceDefinition,
     method: MethodDescriptor<TRequest, TResponse>,
     data?: TRequest,
-    options?: ToSignalOptions<TResponse>
+    options?: ToSignalOptions<unknown>
   ): Signal<TResponse | undefined> {
     const observable = this.request(service, method, data);
-    if (options) {
-      return toSignal(observable, options as ToSignalOptions<TResponse>);
-    } else {
-      return toSignal(observable);
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return toSignal(observable, options as any);
   }
 }
