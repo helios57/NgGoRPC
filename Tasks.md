@@ -69,11 +69,13 @@ Goal: Achieve high confidence through coverage analysis and targeted edge-case t
 
 ## Phase 11: Documentation & Release
 
-- [ ] **Task 11.1: README Polish**
+- [x] **Task 11.1: README Polish**
     - Update root `README.md` with the final installation instructions (npm package name, go get path).
     - Add a "Troubleshooting" section covering common CORS or WebSocket closure codes.
-- [ ] **Task 11.2: CI Configuration**
+    - **Completed: Added Installation section with npm install @nggorpc/client and go get github.com/nggorpc/wsgrpc@latest. Added comprehensive Troubleshooting section covering CORS, WebSocket closure codes, connection issues, authentication, and performance.**
+- [x] **Task 11.2: CI Configuration**
     - Create `.github/workflows/ci.yml`.
     - Job 1: Build & Test Go (Lint, Unit Test).
     - Job 2: Build & Test Angular (Lint, Unit Test, Build Lib).
     - Job 3: E2E (Build Docker, Run Playwright).
+    - **Completed: Created CI workflow with three jobs for Go (lint, build, test with coverage), Angular (lint, build library, unit tests with coverage), and E2E (Docker Compose, Playwright tests).**

@@ -10,6 +10,7 @@ module.exports = {
   },
   testMatch: ['**/projects/client/src/**/*.spec.ts'],
   moduleNameMapper: {
+    '^@angular/core/rxjs-interop$': '<rootDir>/projects/client/src/__mocks__/@angular/core/rxjs-interop.ts',
     '^@angular/core$': '<rootDir>/projects/client/src/__mocks__/@angular/core.ts',
   },
   collectCoverage: true,

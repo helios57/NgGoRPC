@@ -12,8 +12,12 @@ export class NgZone {
   runOutsideAngular(fn: Function) {
     return fn();
   }
-  
+
   run(fn: Function) {
     return fn();
   }
+}
+
+export interface Signal<T> {
+  (): T;
 }

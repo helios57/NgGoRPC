@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  go-build-test:
+    name: Go - Build & Test
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./wsgrpc
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache-dependency-path: wsgrpc/go.sum
+    
+    - name: Download dependencies
+      run: go mod download
+    
+    - name: Verify dependencies
+      run: go mod verify
+    
+    - name: Lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: latest
+        working-directory: wsgrpc
+    
+    - name: Build
+      run: go build -v ./...
+    
+    - name: Run unit tests
+      run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+    
+    - name: Display coverage
+      run: go tool cover -func=coverage.out
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./wsgrpc/coverage.out
+        flags: go
+        name: go-coverage
+
+  angular-build-test:
+    name: Angular - Build & Test
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./frontend
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Lint
+      run: npm run lint
+    
+    - name: Build library
+      run: npm run build:lib
+    
+    - name: Run unit tests
+      run: npm run test:client -- --coverage --watch=false
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./frontend/coverage/client/lcov.info
+        flags: angular
+        name: angular-coverage
+    
+    - name: Build demo app
+      run: npm run build:demo
+    
+    - name: Archive library artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: client-library
+        path: frontend/dist/client/
+        retention-days: 7
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [go-build-test, angular-build-test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker images
+      run: docker-compose build
+    
+    - name: Start services
+      run: docker-compose up -d
+    
+    - name: Wait for services to be ready
+      run: |
+        echo "Waiting for server to be ready..."
+        timeout 60 bash -c 'until curl -f http://localhost:8080/health 2>/dev/null || curl -f http://localhost:8080 2>/dev/null; do sleep 2; done' || echo "Server health check skipped"
+        echo "Waiting for frontend to be ready..."
+        timeout 60 bash -c 'until curl -f http://localhost:4200 2>/dev/null; do sleep 2; done' || echo "Frontend health check skipped"
+        sleep 5
+    
+    - name: Set up Node.js for E2E tests
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: e2e-tests/package-lock.json
+    
+    - name: Install Playwright dependencies
+      working-directory: ./e2e-tests
+      run: |
+        npm ci
+        npx playwright install --with-deps chromium
+    
+    - name: Run E2E tests
+      working-directory: ./e2e-tests
+      run: npm test
+    
+    - name: Upload Playwright report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-report
+        path: e2e-tests/playwright-report/
+        retention-days: 30
+    
+    - name: Display service logs on failure
+      if: failure()
+      run: docker-compose logs
+    
+    - name: Stop services
+      if: always()
+      run: docker-compose down

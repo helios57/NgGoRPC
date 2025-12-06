@@ -5,11 +5,11 @@
     id="status"
     class="status"
     [ngClass]="{
-      'connected': status === 'connected',
-      'disconnected': status === 'disconnected',
-      'reconnecting': status === 'reconnecting'
+      'connected': status() === 'connected',
+      'disconnected': status() === 'disconnected',
+      'reconnecting': status() === 'reconnecting'
     }">
-    Status: {{ status | titlecase }}
+    Status: {{ status() | titlecase }}
   </div>
 
   <!-- Unary RPC Section -->
@@ -26,15 +26,15 @@
           id="sayHelloBtn"
           class="start"
           (click)="sayHello()"
-          [disabled]="status !== 'connected'">
+          [disabled]="status() !== 'connected'">
           Say Hello
         </button>
       </div>
-      @if (greetingResponse) {
-        <div id="greetingResponse" class="response">{{ greetingResponse }}</div>
+      @if (greetingResponse()) {
+        <div id="greetingResponse" class="response">{{ greetingResponse() }}</div>
       }
-      @if (greetingError) {
-        <div id="greetingError" class="error">Error: {{ greetingError }}</div>
+      @if (greetingError()) {
+        <div id="greetingError" class="error">Error: {{ greetingError() }}</div>
       }
     </div>
 
@@ -60,12 +60,12 @@
 
       <div>
         <h3>Tick Count:</h3>
-        <div id="counter" class="counter">{{ tickCount }}</div>
+        <div id="counter" class="counter">{{ tickCount() }}</div>
       </div>
 
       <div>
         <h3>Last Update:</h3>
-        <div id="timestamp">{{ lastTimestamp }}</div>
+        <div id="timestamp">{{ lastTimestamp() }}</div>
       </div>
     </div>
 
@@ -80,18 +80,18 @@
               id="startStream1Btn"
               class="start"
               (click)="startStream1()"
-              [disabled]="stream1Active">
+              [disabled]="stream1Active()">
               Start
             </button>
             <button
               id="stopStream1Btn"
               class="stop"
               (click)="stopStream1()"
-              [disabled]="!stream1Active">
+              [disabled]="!stream1Active()">
               Stop
             </button>
           </div>
-          <div id="stream1Counter" class="counter">{{ stream1Count }}</div>
+          <div id="stream1Counter" class="counter">{{ stream1Count() }}</div>
         </div>
 
         <div class="stream">
@@ -101,19 +101,78 @@
               id="startStream2Btn"
               class="start"
               (click)="startStream2()"
-              [disabled]="stream2Active">
+              [disabled]="stream2Active()">
               Start
             </button>
             <button
               id="stopStream2Btn"
               class="stop"
               (click)="stopStream2()"
-              [disabled]="!stream2Active">
+              [disabled]="!stream2Active()">
               Stop
             </button>
           </div>
-          <div id="stream2Counter" class="counter">{{ stream2Count }}</div>
+          <div id="stream2Counter" class="counter">{{ stream2Count() }}</div>
         </div>
+      </div>
+    </div>
+
+    <!-- requestSignal Examples Section -->
+    <div class="section">
+      <h2>requestSignal Examples</h2>
+
+      <!-- Unary RPC with requestSignal -->
+      <div class="subsection">
+        <h3>Unary RPC with requestSignal</h3>
+        <div class="input-group">
+          <input
+            id="signalGreetingNameInput"
+            type="text"
+            [(ngModel)]="signalGreetingName"
+            placeholder="Enter name"
+            class="name-input">
+          <button
+            id="sayHelloSignalBtn"
+            class="start"
+            (click)="sayHelloWithSignal()"
+            [disabled]="status() !== 'connected'">
+            Say Hello (Signal)
+          </button>
+        </div>
+        @if (signalGreetingResponse()) {
+          <div id="signalGreetingResponse" class="response">{{ signalGreetingResponse()?.message }}</div>
+        }
+      </div>
+
+      <!-- Server Streaming with requestSignal -->
+      <div class="subsection">
+        <h3>Server Streaming with requestSignal</h3>
+        <div class="button-group">
+          <button
+            id="startSignalStreamBtn"
+            class="start"
+            (click)="startSignalStream()"
+            [disabled]="signalStreamActive()">
+            Start Stream (Signal)
+          </button>
+          <button
+            id="stopSignalStreamBtn"
+            class="stop"
+            (click)="stopSignalStream()"
+            [disabled]="!signalStreamActive()">
+            Stop Stream (Signal)
+          </button>
+        </div>
+        @if (signalStreamTick()) {
+          <div>
+            <h4>Signal Stream Tick Count:</h4>
+            <div id="signalStreamCounter" class="counter">{{ signalStreamTick()?.count }}</div>
+          </div>
+          <div>
+            <h4>Signal Stream Timestamp:</h4>
+            <div id="signalStreamTimestamp">{{ signalStreamTick()?.timestamp }}</div>
+          </div>
+        }
       </div>
     </div>
   </div>

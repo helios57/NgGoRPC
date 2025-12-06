@@ -1,10 +1,9 @@
-import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit, signal, effect, WritableSignal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
 import { Empty, Tick, HelloRequest, HelloResponse, GreeterDefinition } from './generated/greeter';
 import { Subscription } from 'rxjs';
-import { map } from 'rxjs/operators';
 
 @Component({
   selector: 'app-root',
@@ -16,27 +15,35 @@ import { map } from 'rxjs/operators';
 export class AppComponent implements OnInit, OnDestroy {
   title = 'NgGoRPC Infinite Ticker Demo';
 
-  status: 'disconnected' | 'connected' | 'reconnecting' = 'disconnected';
-  tickCount: number = 0;
-  lastTimestamp: string = '-';
+  // Use signals for reactive state
+  status = signal<'disconnected' | 'connected' | 'reconnecting'>('disconnected');
+  tickCount = signal<number>(0);
+  lastTimestamp = signal<string>('-');
 
   // Unary RPC properties
   greetingName: string = 'World';
-  greetingResponse: string = '';
-  greetingError: string = '';
+  greetingResponse = signal<string>('');
+  greetingError = signal<string>('');
 
   // Concurrent streams properties
-  stream1Count: number = 0;
-  stream2Count: number = 0;
-  stream1Active: boolean = false;
-  stream2Active: boolean = false;
+  stream1Count = signal<number>(0);
+  stream2Count = signal<number>(0);
+  stream1Active = signal<boolean>(false);
+  stream2Active = signal<boolean>(false);
+
+  // requestSignal examples properties
+  signalGreetingName: string = 'Signal World';
+  signalGreetingResponse = signal<HelloResponse | undefined>(undefined);
+
+  signalStreamTick = signal<Tick | undefined>(undefined);
+  signalStreamActive = signal<boolean>(false);
+  private signalStreamSubscription?: Subscription;
 
   private rpcClient!: NgGoRpcClient;
   private transport!: WebSocketRpcTransport;
   private tickerSubscription?: Subscription;
   private stream1Subscription?: Subscription;
   private stream2Subscription?: Subscription;
-  private statusSubscription?: Subscription;
   private statusCheckInterval?: any;
 
   constructor(private ngZone: NgZone) {}
@@ -63,13 +70,13 @@ export class AppComponent implements OnInit, OnDestroy {
     this.statusCheckInterval = setInterval(() => {
       this.ngZone.run(() => {
         if (this.rpcClient.isConnected()) {
-          this.status = 'connected';
-        } else if (this.status === 'connected') {
+          this.status.set('connected');
+        } else if (this.status() === 'connected') {
           // Was connected, now disconnected - reconnecting
-          this.status = 'reconnecting';
+          this.status.set('reconnecting');
         } else {
           // Initial connection or still disconnected
-          this.status = 'disconnected';
+          this.status.set('disconnected');
         }
       });
     }, 500); // Check every 500ms
@@ -79,9 +86,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.stopTicker();
     this.stopStream1();
     this.stopStream2();
-    if (this.statusSubscription) {
-      this.statusSubscription.unsubscribe();
-    }
+    this.stopSignalStream();
     if (this.statusCheckInterval) {
       clearInterval(this.statusCheckInterval);
     }
@@ -93,24 +98,22 @@ export class AppComponent implements OnInit, OnDestroy {
       return; // Already running
     }
 
-    this.tickCount = 0;
-    this.lastTimestamp = '-';
+    this.tickCount.set(0);
+    this.lastTimestamp.set('-');
 
     // Call InfiniteTicker using the new typed API
     this.tickerSubscription = this.transport.request(
       GreeterDefinition,
       GreeterDefinition.methods.infiniteTicker
-    ).pipe(
-      map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({
       next: (tick: Tick) => {
-        this.status = 'connected';
-        this.tickCount = Number(tick.count);
-        this.lastTimestamp = new Date(Number(tick.timestamp) * 1000).toLocaleString();
+        this.status.set('connected');
+        this.tickCount.set(Number(tick.count));
+        this.lastTimestamp.set(new Date(Number(tick.timestamp) * 1000).toLocaleString());
       },
       error: (err: Error) => {
         console.error('Ticker error:', err);
-        this.status = 'reconnecting';
+        this.status.set('reconnecting');
         this.tickerSubscription = undefined;
       },
       complete: () => {
@@ -133,23 +136,21 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // Unary RPC method
   sayHello(): void {
-    this.greetingError = '';
-    this.greetingResponse = 'Loading...';
+    this.greetingError.set('');
+    this.greetingResponse.set('Loading...');
 
     this.transport.request(
       GreeterDefinition,
       GreeterDefinition.methods.sayHello,
       { name: this.greetingName }
-    ).pipe(
-      map((data: Uint8Array) => HelloResponse.decode(data))
     ).subscribe({
       next: (response: HelloResponse) => {
-        this.greetingResponse = response.message;
+        this.greetingResponse.set(response.message);
         console.log('SayHello response:', response.message);
       },
       error: (err: Error) => {
-        this.greetingError = err.message;
-        this.greetingResponse = '';
+        this.greetingError.set(err.message);
+        this.greetingResponse.set('');
         console.error('SayHello error:', err);
       },
       complete: () => {
@@ -164,26 +165,24 @@ export class AppComponent implements OnInit, OnDestroy {
       return; // Already running
     }
 
-    this.stream1Count = 0;
-    this.stream1Active = true;
+    this.stream1Count.set(0);
+    this.stream1Active.set(true);
 
     this.stream1Subscription = this.transport.request(
       GreeterDefinition,
       GreeterDefinition.methods.infiniteTicker
-    ).pipe(
-      map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({
       next: (tick: Tick) => {
-        this.stream1Count = Number(tick.count);
+        this.stream1Count.set(Number(tick.count));
       },
       error: (err: Error) => {
         console.error('Stream 1 error:', err);
-        this.stream1Active = false;
+        this.stream1Active.set(false);
         this.stream1Subscription = undefined;
       },
       complete: () => {
         console.log('Stream 1 completed');
-        this.stream1Active = false;
+        this.stream1Active.set(false);
         this.stream1Subscription = undefined;
       }
     });
@@ -193,7 +192,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.stream1Subscription) {
       this.stream1Subscription.unsubscribe();
       this.stream1Subscription = undefined;
-      this.stream1Active = false;
+      this.stream1Active.set(false);
     }
   }
 
@@ -203,26 +202,24 @@ export class AppComponent implements OnInit, OnDestroy {
       return; // Already running
     }
 
-    this.stream2Count = 0;
-    this.stream2Active = true;
+    this.stream2Count.set(0);
+    this.stream2Active.set(true);
 
     this.stream2Subscription = this.transport.request(
       GreeterDefinition,
       GreeterDefinition.methods.infiniteTicker
-    ).pipe(
-      map((data: Uint8Array) => Tick.decode(data))
     ).subscribe({
       next: (tick: Tick) => {
-        this.stream2Count = Number(tick.count);
+        this.stream2Count.set(Number(tick.count));
       },
       error: (err: Error) => {
         console.error('Stream 2 error:', err);
-        this.stream2Active = false;
+        this.stream2Active.set(false);
         this.stream2Subscription = undefined;
       },
       complete: () => {
         console.log('Stream 2 completed');
-        this.stream2Active = false;
+        this.stream2Active.set(false);
         this.stream2Subscription = undefined;
       }
     });
@@ -232,7 +229,68 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.stream2Subscription) {
       this.stream2Subscription.unsubscribe();
       this.stream2Subscription = undefined;
-      this.stream2Active = false;
+      this.stream2Active.set(false);
+    }
+  }
+
+  // requestSignal example methods
+  sayHelloWithSignal(): void {
+    // Use requestSignal to get a signal directly from the RPC call
+    const responseSignal = this.transport.requestSignal(
+      GreeterDefinition,
+      GreeterDefinition.methods.sayHello,
+      { name: this.signalGreetingName }
+    );
+
+    // Update our component signal with the response
+    // Note: requestSignal returns a Signal, so we need to subscribe to its changes
+    this.signalGreetingResponse.set(responseSignal());
+
+    // Create an effect to track signal changes (useful for debugging)
+    effect(() => {
+      const response = responseSignal();
+      if (response) {
+        this.signalGreetingResponse.set(response);
+        console.log('SayHello (Signal) response:', response.message);
+      }
+    });
+  }
+
+  startSignalStream(): void {
+    if (this.signalStreamSubscription) {
+      return; // Already running
+    }
+
+    this.signalStreamTick.set(undefined);
+    this.signalStreamActive.set(true);
+
+    // For streaming, we still need to subscribe to the observable
+    // but we can also demonstrate using requestSignal with streaming responses
+    this.signalStreamSubscription = this.transport.request(
+      GreeterDefinition,
+      GreeterDefinition.methods.infiniteTicker
+    ).subscribe({
+      next: (tick: Tick) => {
+        this.signalStreamTick.set(tick);
+      },
+      error: (err: Error) => {
+        console.error('Signal Stream error:', err);
+        this.signalStreamActive.set(false);
+        this.signalStreamSubscription = undefined;
+      },
+      complete: () => {
+        console.log('Signal Stream completed');
+        this.signalStreamActive.set(false);
+        this.signalStreamSubscription = undefined;
+      }
+    });
+  }
+
+  stopSignalStream(): void {
+    if (this.signalStreamSubscription) {
+      this.signalStreamSubscription.unsubscribe();
+      this.signalStreamSubscription = undefined;
+      this.signalStreamActive.set(false);
     }
   }
 }

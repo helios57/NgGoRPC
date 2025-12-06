@@ -68,6 +68,44 @@ npm install
 
 ---
 
+## Installation
+
+### Installing the Angular Client Library
+
+To use NgGoRPC in your Angular application, install the client library from npm:
+
+```bash
+npm install @nggorpc/client
+```
+
+Or install from a local build artifact:
+
+```bash
+npm install ./path/to/nggorpc-client-1.0.0.tgz
+```
+
+### Installing the Go Server Library
+
+To use NgGoRPC in your Go backend, add the library to your project:
+
+```bash
+go get github.com/nggorpc/wsgrpc@latest
+```
+
+Or add it to your `go.mod`:
+
+```go
+require github.com/nggorpc/wsgrpc v1.0.0
+```
+
+Then run:
+
+```bash
+go mod download
+```
+
+---
+
 ## Building the Libraries
 
 ### TypeScript Client Library
@@ -334,6 +372,150 @@ Deploy the `dist/` directory to your web server, CDN, or hosting platform (e.g.,
 4. **Build**: Compile both libraries
 5. **Test**: Run unit tests and E2E tests
 6. **Deploy**: Package and deploy to your environment
+
+---
+
+## Troubleshooting
+
+### CORS Issues
+
+If you encounter CORS errors when connecting from your Angular app to the Go server, ensure your server is configured to allow WebSocket connections from your frontend origin.
+
+**Common symptoms:**
+- `Access to WebSocket at 'ws://...' from origin '...' has been blocked by CORS policy`
+- Connection fails immediately without establishing WebSocket
+
+**Solution:**
+
+In your Go server, configure CORS headers properly. The `wsgrpc` library doesn't handle HTTP upgrade requests automatically—you need to set up appropriate middleware:
+
+```go
+// Add CORS middleware before upgrading to WebSocket
+func corsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        origin := r.Header.Get("Origin")
+        if origin != "" {
+            w.Header().Set("Access-Control-Allow-Origin", origin)
+            w.Header().Set("Access-Control-Allow-Credentials", "true")
+            w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        }
+        
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+        
+        next.ServeHTTP(w, r)
+    })
+}
+
+// Apply to your WebSocket endpoint
+http.Handle("/rpc", corsMiddleware(wsgrpcHandler))
+```
+
+For development, you can allow all origins with `Access-Control-Allow-Origin: *`, but in production, restrict this to your specific frontend domain.
+
+### WebSocket Closure Codes
+
+NgGoRPC uses standard WebSocket closure codes. Understanding these codes helps diagnose connection issues:
+
+| Code | Name | Description | Typical Cause |
+|------|------|-------------|---------------|
+| `1000` | Normal Closure | Clean disconnection | Client called `close()` or server shut down gracefully |
+| `1001` | Going Away | Endpoint is going away | Browser tab closed or server restarting |
+| `1002` | Protocol Error | WebSocket protocol violation | Malformed frame or invalid upgrade handshake |
+| `1003` | Unsupported Data | Received incompatible data type | Server/client version mismatch |
+| `1006` | Abnormal Closure | Connection lost without close frame | Network interruption, firewall, or timeout |
+| `1008` | Policy Violation | Message violates policy | Frame size exceeds `maxFrameSize` limit |
+| `1009` | Message Too Big | Message too large to process | Payload exceeds server limits (default: 4MB) |
+| `1011` | Internal Error | Server encountered an error | Unhandled exception in gRPC handler |
+| `1012` | Service Restart | Server is restarting | Planned maintenance or deployment |
+| `1013` | Try Again Later | Server overloaded | Rate limiting or resource exhaustion |
+
+**Common scenarios:**
+
+**Code 1006 (Abnormal Closure):**
+- **Client reconnects immediately**: Normal behavior during network instability. The client's exponential backoff will handle reconnection.
+- **Client cannot reconnect**: Check server availability, firewall rules, or proxy timeout settings.
+
+**Code 1008 or 1009 (Frame/Message Too Big):**
+- Increase `maxFrameSize` in the client config if you're sending large messages:
+  ```typescript
+  const config: NgGoRpcConfig = {
+    maxFrameSize: 16 * 1024 * 1024  // 16MB
+  };
+  ```
+- Ensure your server's `MaxPayloadSize` is also increased if needed.
+
+**Code 1011 (Internal Error):**
+- Check server logs for panics or unhandled errors in your gRPC service handlers.
+- Verify that all required fields in your Protobuf messages are properly set.
+
+### Connection Keeps Dropping
+
+If your WebSocket connection drops repeatedly:
+
+1. **Check keep-alive settings**: Adjust `pingInterval` in the client config:
+   ```typescript
+   const config: NgGoRpcConfig = {
+     pingInterval: 30000  // Send ping every 30 seconds
+   };
+   ```
+
+2. **Proxy/Load Balancer timeout**: Many proxies (Nginx, ALB, etc.) have default WebSocket idle timeouts (typically 60s). Either:
+   - Configure your proxy to allow longer idle times
+   - Decrease the client's `pingInterval` to stay below the timeout
+
+3. **Mobile networks**: On cellular connections, NAT gateways often close idle connections aggressively. Use a shorter `pingInterval` (e.g., 15-20 seconds).
+
+### Authentication Not Working
+
+If `setAuthToken()` doesn't work as expected:
+
+1. **Verify the token is sent**: Check browser DevTools → Network → your WebSocket connection → Messages. The first `HEADERS` frame should contain the authorization metadata.
+
+2. **Server-side extraction**: Ensure your Go server extracts metadata correctly:
+   ```go
+   func (s *greeterService) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
+       md, ok := metadata.FromIncomingContext(ctx)
+       if !ok {
+           return nil, status.Error(codes.Unauthenticated, "no metadata")
+       }
+       
+       tokens := md.Get("authorization")
+       if len(tokens) == 0 {
+           return nil, status.Error(codes.Unauthenticated, "no auth token")
+       }
+       
+       // Validate tokens[0]...
+   }
+   ```
+
+3. **Token format**: By default, the token is sent as-is. If your server expects `Bearer <token>`, prepend it:
+   ```typescript
+   client.setAuthToken(`Bearer ${token}`);
+   ```
+
+### High CPU Usage in Angular App
+
+If you experience performance issues during high-frequency streaming:
+
+1. **Zone optimization**: The library already runs WebSocket events outside Angular's zone. Ensure you're not forcing change detection manually on every message.
+
+2. **Use OnPush strategy**: In components that display stream data:
+   ```typescript
+   @Component({
+     changeDetection: ChangeDetectionStrategy.OnPush
+   })
+   ```
+
+3. **Debounce/throttle**: For rapid updates (e.g., price tickers), use RxJS operators:
+   ```typescript
+   service.streamPrices(request).pipe(
+     throttleTime(100)  // Max 10 updates/second
+   ).subscribe(...)
+   ```
 
 ---
 
