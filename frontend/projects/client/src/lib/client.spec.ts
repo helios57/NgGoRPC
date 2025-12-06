@@ -440,6 +440,117 @@ describe('NgGoRpcClient', () => {
     });
   });
 
+  describe('Logging', () => {
+    it('should log messages when enableLogging is true', () => {
+      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const loggingClient = new NgGoRpcClient(mockNgZone, { enableLogging: true });
+
+      // Set up connection
+      (loggingClient as unknown as Record<string, unknown>).socket = mockSocket;
+      (loggingClient as unknown as Record<string, unknown>).connected = true;
+
+      // Test logging in various methods
+      (loggingClient as unknown as Record<string, unknown>).sendPing();
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Sent PING'));
+
+      (loggingClient as unknown as Record<string, unknown>).startPingInterval();
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Keep-alive ping interval started'));
+
+      (loggingClient as unknown as Record<string, unknown>).stopPingInterval();
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Keep-alive ping interval stopped'));
+
+      consoleLogSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should not log when enableLogging is false', () => {
+      const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const silentClient = new NgGoRpcClient(mockNgZone, { enableLogging: false });
+
+      // Set up connection
+      (silentClient as unknown as Record<string, unknown>).socket = mockSocket;
+      (silentClient as unknown as Record<string, unknown>).connected = true;
+
+      const callCountBefore = consoleLogSpy.mock.calls.length;
+      (silentClient as unknown as Record<string, unknown>).sendPing();
+      const callCountAfter = consoleLogSpy.mock.calls.length;
+
+      // Should not have logged
+      expect(callCountAfter).toBe(callCountBefore);
+
+      consoleLogSpy.mockRestore();
+    });
+  });
+
+  describe('SSR Safety', () => {
+    it('should skip connection when WebSocket is undefined (SSR)', () => {
+      const originalWebSocket = (global as any).WebSocket;
+      (global as any).WebSocket = undefined;
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const ssrClient = new NgGoRpcClient(mockNgZone, { enableLogging: true });
+
+      ssrClient.connect('ws://localhost:8080');
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('WebSocket not available'));
+      expect((ssrClient as unknown as Record<string, unknown>).socket).toBeNull();
+
+      consoleWarnSpy.mockRestore();
+      (global as any).WebSocket = originalWebSocket;
+    });
+
+    it('should not warn in SSR when logging is disabled', () => {
+      const originalWebSocket = (global as any).WebSocket;
+      (global as any).WebSocket = undefined;
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const ssrClient = new NgGoRpcClient(mockNgZone, { enableLogging: false });
+
+      ssrClient.connect('ws://localhost:8080');
+
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+
+      consoleWarnSpy.mockRestore();
+      (global as any).WebSocket = originalWebSocket;
+    });
+  });
+
+  describe('setAuthToken', () => {
+    it('should set auth token', () => {
+      const token = 'test-auth-token-12345';
+      client.setAuthToken(token);
+      expect((client as unknown as Record<string, unknown>).authToken).toBe(token);
+    });
+
+    it('should set auth token to null when cleared', () => {
+      client.setAuthToken('initial-token');
+      client.setAuthToken(null);
+      expect((client as unknown as Record<string, unknown>).authToken).toBeNull();
+    });
+  });
+
+  describe('isConnected', () => {
+    it('should return true when connected', () => {
+      (client as unknown as Record<string, unknown>).connected = true;
+      expect(client.isConnected()).toBe(true);
+    });
+
+    it('should return false when not connected', () => {
+      (client as unknown as Record<string, unknown>).connected = false;
+      expect(client.isConnected()).toBe(false);
+    });
+  });
+
+
 });
 
 
