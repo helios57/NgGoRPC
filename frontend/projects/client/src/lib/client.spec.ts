@@ -376,7 +376,7 @@ describe('NgGoRpcClient', () => {
       });
 
       // Track when attemptConnection is called by spying on it
-      const attemptConnectionSpy = jest.spyOn(clientWithConfig as any, 'attemptConnection');
+      const attemptConnectionSpy = jest.spyOn(clientWithConfig as unknown as Record<string, unknown>, 'attemptConnection');
 
       // Start with reconnectAttempt = 0
       (clientWithConfig as unknown as Record<string, unknown>).reconnectAttempt = 0;

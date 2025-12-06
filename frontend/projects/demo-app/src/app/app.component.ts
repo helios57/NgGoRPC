@@ -1,8 +1,8 @@
-import { Component, NgZone, OnDestroy, OnInit, signal, effect, WritableSignal } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
-import { Empty, Tick, HelloRequest, HelloResponse, GreeterDefinition } from './generated/greeter';
+import { Tick, HelloResponse, GreeterDefinition } from './generated/greeter';
 import { Subscription } from 'rxjs';
 
 @Component({
@@ -44,7 +44,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private tickerSubscription?: Subscription;
   private stream1Subscription?: Subscription;
   private stream2Subscription?: Subscription;
-  private statusCheckInterval?: any;
+  private statusCheckInterval?: ReturnType<typeof setInterval>;
 
   constructor(private ngZone: NgZone) {}
 

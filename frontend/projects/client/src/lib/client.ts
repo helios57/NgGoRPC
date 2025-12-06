@@ -210,7 +210,7 @@ export class NgGoRpcClient {
      */
     private errorOutActiveStreams(): void {
         this.ngZone.run(() => {
-            this.streamMap.forEach((subject, _streamId) => {
+            this.streamMap.forEach((subject) => {
                 subject.error(new Error('Connection lost - UNAVAILABLE'));
             });
             this.streamMap.clear();
