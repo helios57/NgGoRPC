@@ -19,6 +19,6 @@ module.exports = {
     '!projects/client/src/lib/**/*.spec.ts',
     '!projects/client/src/lib/**/*.d.ts',
   ],
-  coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov', 'html'],
+  coverageDirectory: 'coverage/client',
+  coverageReporters: ['text', 'lcov', 'html', 'json-summary'],
 };
