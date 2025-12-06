@@ -115,11 +115,11 @@ Increase timeouts in `playwright.config.ts` or wait longer in tests.
 
 ### Backend Logs Not Found
 
-Make sure you're running from the `e2e-tests` directory and docker-compose.yml is in the parent directory.
+Make sure you're running from the `e2e-tests` directory and docker compose.yml is in the parent directory.
 
 ### Clean Up Docker Resources
 
 ```bash
 npm run docker:down
-docker-compose -f ../docker-compose.yml down -v
+docker compose -f ../docker compose.yml down -v
 ```
