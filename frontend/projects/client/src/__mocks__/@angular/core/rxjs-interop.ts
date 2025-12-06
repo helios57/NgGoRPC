@@ -8,7 +8,7 @@ import { Signal } from '@angular/core';
 export interface ToSignalOptions<T> {
   initialValue?: T;
   requireSync?: boolean;
-  injector?: any;
+  injector?: unknown;
 }
 
 /**

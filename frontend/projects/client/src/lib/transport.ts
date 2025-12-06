@@ -8,17 +8,17 @@ import {NgGoRpcClient} from './client';
  * Represents a message type with encoding/decoding capabilities
  */
 export interface MessageFns<T> {
-  encode(message: T, writer?: any): any;
+  encode(message: T, writer?: unknown): { finish(): Uint8Array };
 
-  decode(input: Uint8Array | any, length?: number): T;
+  decode(input: Uint8Array | ArrayBuffer, length?: number): T;
 
-  fromJSON(object: any): T;
+  fromJSON(object: unknown): T;
 
   toJSON(message: T): unknown;
 
-  create(base?: any): T;
+  create(base?: Partial<T>): T;
 
-  fromPartial(object: any): T;
+  fromPartial(object: Partial<T>): T;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface MethodDescriptor<TRequest, TResponse> {
   requestStream: boolean;
   responseType: MessageFns<TResponse>;
   responseStream: boolean;
-  options: Record<string, any>;
+  options: Record<string, unknown>;
 }
 
 /**
@@ -39,7 +39,7 @@ export interface MethodDescriptor<TRequest, TResponse> {
 export interface ServiceDefinition {
   name: string;
   fullName: string;
-  methods: Record<string, MethodDescriptor<any, any>>;
+  methods: Record<string, MethodDescriptor<unknown, unknown>>;
 }
 
 /**
@@ -111,7 +111,7 @@ export class WebSocketRpcTransport {
   ): Signal<TResponse | undefined> {
     const observable = this.request(service, method, data);
     if (options) {
-      return toSignal(observable, options as any);
+      return toSignal(observable, options);
     } else {
       return toSignal(observable);
     }

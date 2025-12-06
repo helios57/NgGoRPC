@@ -1,5 +1,4 @@
-import { makeEnvironmentProviders, NgZone, PLATFORM_ID, inject, InjectionToken } from '@angular/core';
-import { isPlatformBrowser } from '@angular/common';
+import { makeEnvironmentProviders, NgZone, inject, InjectionToken } from '@angular/core';
 import { NgGoRpcClient, NgGoRpcConfig } from './client';
 
 /**

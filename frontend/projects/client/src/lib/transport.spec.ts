@@ -1,4 +1,4 @@
-import { of, throwError } from 'rxjs';
+import { of, throwError, Observable } from 'rxjs';
 import { WebSocketRpcTransport, ServiceDefinition, MethodDescriptor } from './transport';
 import { NgGoRpcClient } from './client';
 
@@ -18,19 +18,19 @@ interface TestTick {
 
 // Mock MessageFns
 const mockRequestType = {
-  encode: jest.fn((message: TestRequest) => ({
+  encode: jest.fn((_message: TestRequest) => ({
     finish: jest.fn(() => new Uint8Array([1, 2, 3]))
   })),
   decode: jest.fn(),
   fromJSON: jest.fn(),
   toJSON: jest.fn(),
-  create: jest.fn((base?: any) => ({ name: '' })),
+  create: jest.fn((_base?: Partial<TestRequest>) => ({ name: '' })),
   fromPartial: jest.fn(),
 };
 
 const mockResponseType = {
   encode: jest.fn(),
-  decode: jest.fn((input: Uint8Array) => ({ message: 'Hello, World!' })),
+  decode: jest.fn((_input: Uint8Array) => ({ message: 'Hello, World!' })),
   fromJSON: jest.fn(),
   toJSON: jest.fn(),
   create: jest.fn(),
@@ -39,7 +39,7 @@ const mockResponseType = {
 
 const mockTickType = {
   encode: jest.fn(),
-  decode: jest.fn((input: Uint8Array) => ({ count: 1, timestamp: 1000 })),
+  decode: jest.fn((_input: Uint8Array) => ({ count: 1, timestamp: 1000 })),
   fromJSON: jest.fn(),
   toJSON: jest.fn(),
   create: jest.fn(() => ({})),
@@ -78,7 +78,7 @@ describe('WebSocketRpcTransport', () => {
     // Create a mock NgGoRpcClient
     mockClient = {
       request: jest.fn(),
-    } as any;
+    } as unknown as jest.Mocked<NgGoRpcClient>;
 
     transport = new WebSocketRpcTransport(mockClient);
 
@@ -187,7 +187,7 @@ describe('WebSocketRpcTransport', () => {
         .mockReturnValueOnce(decodedResponse2);
 
       mockClient.request.mockReturnValue(
-        new (require('rxjs').Observable)((subscriber: any) => {
+        new Observable((subscriber) => {
           subscriber.next(encodedResponse1);
           subscriber.next(encodedResponse2);
           subscriber.complete();
@@ -284,7 +284,7 @@ describe('WebSocketRpcTransport', () => {
 
       // Use an async observable to test initialValue properly
       mockClient.request.mockReturnValue(
-        new (require('rxjs').Observable)((subscriber: any) => {
+        new Observable((subscriber) => {
           setTimeout(() => {
             subscriber.next(encodedResponse);
             subscriber.complete();
@@ -325,7 +325,7 @@ describe('WebSocketRpcTransport', () => {
         .mockReturnValueOnce(decodedResponse2);
 
       mockClient.request.mockReturnValue(
-        new (require('rxjs').Observable)((subscriber: any) => {
+        new Observable((subscriber) => {
           subscriber.next(encodedResponse1);
           setTimeout(() => {
             subscriber.next(encodedResponse2);
@@ -356,3 +356,4 @@ describe('WebSocketRpcTransport', () => {
     });
   });
 });
+

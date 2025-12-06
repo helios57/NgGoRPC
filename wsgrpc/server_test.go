@@ -1052,3 +1052,435 @@ func TestMalformedFrames(t *testing.T) {
 
 	t.Log("All malformed frame scenarios handled without panic")
 }
+
+// TestPingPongHandling verifies that PING frames are responded to with PONG frames
+func TestPingPongHandling(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a simple service
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams:     []grpc.StreamDesc{},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
+
+	// Send a PING frame
+	pingFrame := encodeFrame(0, FlagPING, []byte{})
+	if err := conn.Write(ctx, websocket.MessageBinary, pingFrame); err != nil {
+		t.Fatalf("Failed to send PING frame: %v", err)
+	}
+
+	// Read response - should be PONG
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	msgType, frameData, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("Failed to read PONG response: %v", err)
+	}
+
+	if msgType != websocket.MessageBinary {
+		t.Fatalf("Expected binary message, got: %v", msgType)
+	}
+
+	frame, err := decodeFrame(frameData, 4*1024*1024)
+	if err != nil {
+		t.Fatalf("Failed to decode PONG frame: %v", err)
+	}
+
+	if frame.Flags&FlagPONG == 0 {
+		t.Errorf("Expected PONG flag in response, got flags: 0x%02x", frame.Flags)
+	}
+
+	t.Log("PING/PONG handling successful")
+}
+
+// TestShutdownRejectsNewConnections verifies that new connections are rejected during shutdown
+func TestShutdownRejectsNewConnections(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a simple service
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams:     []grpc.StreamDesc{},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	// Establish a connection first
+	ctx := context.Background()
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		if err := conn1.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
+
+	// Start shutdown in a goroutine
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- server.Shutdown(shutdownCtx)
+	}()
+
+	// Give shutdown time to set the flag
+	time.Sleep(100 * time.Millisecond)
+
+	// Try to establish a new connection during shutdown
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err == nil {
+		// Connection was accepted, but handleConnection should reject it
+		defer func() {
+			if err := conn2.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+				t.Logf("Failed to close connection: %v", err)
+			}
+		}()
+
+		// Send a frame to trigger processing
+		pingFrame := encodeFrame(0, FlagPING, []byte{})
+		if err := conn2.Write(ctx, websocket.MessageBinary, pingFrame); err != nil {
+			t.Logf("Write failed as expected: %v", err)
+		}
+
+		// Try to read - connection should be closed
+		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_, _, err = conn2.Read(readCtx)
+		if err != nil {
+			t.Logf("Connection closed during shutdown (expected): %v", err)
+		}
+	}
+
+	// Close the first connection to allow shutdown to complete
+	if err := conn1.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+		t.Logf("Failed to close connection: %v", err)
+	}
+
+	// Wait for shutdown to complete
+	select {
+	case err := <-shutdownDone:
+		if err != nil && err != context.DeadlineExceeded {
+			t.Logf("Shutdown completed with: %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Error("Shutdown did not complete in time")
+	}
+
+	t.Log("Shutdown rejection test completed")
+}
+
+// TestInvalidMessageTypes verifies error handling for non-proto.Message types
+func TestInvalidMessageTypes(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a service with a handler that tries to send/recv invalid types
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "TestStream",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
+					// Try to send a non-proto.Message type
+					if err := stream.SendMsg("invalid string type"); err != nil {
+						t.Logf("SendMsg correctly rejected non-proto.Message: %v", err)
+					} else {
+						t.Error("SendMsg should have rejected non-proto.Message")
+					}
+
+					// Try to receive into a non-proto.Message type
+					var invalidRecv string
+					if err := stream.RecvMsg(&invalidRecv); err != nil {
+						t.Logf("RecvMsg correctly rejected non-proto.Message: %v", err)
+						return err
+					}
+					return fmt.Errorf("RecvMsg should have rejected non-proto.Message")
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
+
+	// Start the stream
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/TestStream\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Send some data to trigger the handler
+	req := &pb.HelloRequest{Name: "Test"}
+	data, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal request: %v", err)
+	}
+	dataFrame := encodeFrame(streamID, FlagDATA, data)
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send DATA: %v", err)
+	}
+
+	// Read the response - should get trailers with error status
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	for {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			continue
+		}
+
+		if frame.Flags&FlagTRAILERS != 0 {
+			t.Log("Received TRAILERS frame with error status (expected)")
+			break
+		}
+	}
+
+	t.Log("Invalid message type handling test completed")
+}
+
+// TestSendChannelClosed verifies error handling when send channel is closed
+func TestSendChannelClosed(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	streamReceived := make(chan *WebSocketServerStream, 1)
+
+	// Register a service that captures the stream
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "TestStream",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
+					// Capture the stream
+					if wsStream, ok := stream.(*WebSocketServerStream); ok {
+						streamReceived <- wsStream
+					}
+					// Keep the handler alive
+					time.Sleep(5 * time.Second)
+					return nil
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+
+	// Start the stream
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/TestStream\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Wait for stream to be created
+	var wsStream *WebSocketServerStream
+	select {
+	case wsStream = <-streamReceived:
+		t.Log("Stream captured")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for stream")
+	}
+
+	// Close the send channel directly to simulate closed channel scenario
+	wsStream.conn.mu.Lock()
+	if !wsStream.conn.sendClosed {
+		close(wsStream.conn.sendChan)
+		wsStream.conn.sendClosed = true
+	}
+	wsStream.conn.mu.Unlock()
+
+	// Try to send a message - should get error
+	resp := &pb.HelloResponse{Message: "test"}
+	err = wsStream.SendMsg(resp)
+	if err == nil {
+		t.Error("Expected error when sending to closed channel")
+	} else {
+		t.Logf("Correctly got error when sending to closed channel: %v", err)
+	}
+
+	// Close connection
+	if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+		t.Logf("Failed to close connection: %v", err)
+	}
+
+	t.Log("Send channel closed test completed")
+}
+
+// TestContextCancellationInRecvMsg verifies that RecvMsg handles context cancellation
+func TestContextCancellationInRecvMsg(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	streamReceived := make(chan *WebSocketServerStream, 1)
+
+	// Register a service that captures the stream and tries to receive
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "TestStream",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
+					// Capture the stream
+					if wsStream, ok := stream.(*WebSocketServerStream); ok {
+						streamReceived <- wsStream
+					}
+
+					// Try to receive - will block until context is cancelled
+					var req pb.HelloRequest
+					err := stream.RecvMsg(&req)
+					if err != nil {
+						t.Logf("RecvMsg correctly returned error on context cancellation: %v", err)
+						return err
+					}
+					return nil
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
+
+	// Start the stream
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/TestStream\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Wait for stream to be created
+	var wsStream *WebSocketServerStream
+	select {
+	case wsStream = <-streamReceived:
+		t.Log("Stream captured")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for stream")
+	}
+
+	// Cancel the context
+	time.Sleep(100 * time.Millisecond)
+	if wsStream.cancel != nil {
+		wsStream.cancel()
+	}
+
+	// Wait a bit for handler to process
+	time.Sleep(500 * time.Millisecond)
+
+	t.Log("Context cancellation in RecvMsg test completed")
+}

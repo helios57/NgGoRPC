@@ -33,14 +33,14 @@ export class NgGoRpcClient {
     private connected = false;
     private streamMap: Map<number, Subject<Uint8Array>> = new Map();
     private nextStreamId = 1; // Client-initiated streams use odd numbers
-    private reconnectTimeoutId: any = null;
+    private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
     private reconnectAttempt = 0;
     private readonly maxReconnectDelay: number;
     private readonly baseReconnectDelay: number;
     private currentUrl: string | null = null;
     private reconnectionEnabled = false;
-    private pingIntervalId: any = null;
-    private pongTimeoutId: any = null;
+    private pingIntervalId: ReturnType<typeof setInterval> | null = null;
+    private pongTimeoutId: ReturnType<typeof setTimeout> | null = null;
     private readonly pingInterval: number;
     private readonly maxFrameSize: number;
     private readonly pingStreamId = 0; // Reserved stream ID for keep-alive
@@ -210,7 +210,7 @@ export class NgGoRpcClient {
      */
     private errorOutActiveStreams(): void {
         this.ngZone.run(() => {
-            this.streamMap.forEach((subject, streamId) => {
+            this.streamMap.forEach((subject, _streamId) => {
                 subject.error(new Error('Connection lost - UNAVAILABLE'));
             });
             this.streamMap.clear();

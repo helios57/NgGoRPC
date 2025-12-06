@@ -3,17 +3,17 @@
  */
 
 export function Injectable() {
-  return function(target: any) {
+  return function<T>(target: T): T {
     return target;
   };
 }
 
 export class NgZone {
-  runOutsideAngular(fn: Function) {
+  runOutsideAngular<T>(fn: () => T): T {
     return fn();
   }
 
-  run(fn: Function) {
+  run<T>(fn: () => T): T {
     return fn();
   }
 }

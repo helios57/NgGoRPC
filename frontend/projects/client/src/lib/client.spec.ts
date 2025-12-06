@@ -10,25 +10,25 @@ import { FrameFlags, decodeFrame } from './frame';
 
 // Mock NgZone for testing
 class MockNgZone {
-  runOutsideAngular(fn: Function) {
+  runOutsideAngular<T>(fn: () => T): T {
     return fn();
   }
 
-  run(fn: Function) {
+  run<T>(fn: () => T): T {
     return fn();
   }
 }
 
 describe('NgGoRpcClient', () => {
   let client: NgGoRpcClient;
-  let mockSocket: any;
+  let mockSocket: WebSocket;
   let sentMessages: Uint8Array[];
 
   beforeEach(() => {
     sentMessages = [];
 
     // Create a mock WebSocket
-    mockSocket = {
+    mockSocket = Object.assign(Object.create(null), {
       readyState: 1, // WebSocket.OPEN
       send: jest.fn((data: Uint8Array) => {
         sentMessages.push(new Uint8Array(data));
@@ -36,16 +36,16 @@ describe('NgGoRpcClient', () => {
       close: jest.fn(),
       addEventListener: jest.fn(),
       removeEventListener: jest.fn(),
-    };
+    }) as unknown as WebSocket;
 
     // Mock WebSocket constructor
-    (global as any).WebSocket = jest.fn(() => mockSocket);
-    (global as any).WebSocket.OPEN = 1;
-    (global as any).WebSocket.CONNECTING = 0;
-    (global as any).WebSocket.CLOSING = 2;
-    (global as any).WebSocket.CLOSED = 3;
+    (global as unknown as { WebSocket: typeof WebSocket & { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number } }).WebSocket = jest.fn(() => mockSocket) as unknown as typeof WebSocket & { OPEN: number; CONNECTING: number; CLOSING: number; CLOSED: number };
+    (global as unknown as { WebSocket: { OPEN: number } }).WebSocket.OPEN = 1;
+    (global as unknown as { WebSocket: { CONNECTING: number } }).WebSocket.CONNECTING = 0;
+    (global as unknown as { WebSocket: { CLOSING: number } }).WebSocket.CLOSING = 2;
+    (global as unknown as { WebSocket: { CLOSED: number } }).WebSocket.CLOSED = 3;
 
-    const mockNgZone = new MockNgZone() as any;
+    const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
     client = new NgGoRpcClient(mockNgZone);
   });
 
@@ -62,11 +62,11 @@ describe('NgGoRpcClient', () => {
       jest.useFakeTimers();
 
       // Manually set the socket on the client (simulating successful connection)
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
 
       // Trigger sendPing which starts the watchdog timeout
-      (client as any).sendPing();
+      (client as unknown as Record<string, unknown>).sendPing();
 
       // Verify socket.close was not called yet
       expect(mockSocket.close).not.toHaveBeenCalled();
@@ -85,19 +85,19 @@ describe('NgGoRpcClient', () => {
       jest.useFakeTimers();
 
       // Manually set the socket on the client (simulating successful connection)
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
 
       // Trigger sendPing which starts the watchdog timeout
-      (client as any).sendPing();
+      (client as unknown as Record<string, unknown>).sendPing();
 
       // Verify timeout is set
-      expect((client as any).pongTimeoutId).not.toBeNull();
+      expect((client as unknown as Record<string, unknown>).pongTimeoutId).not.toBeNull();
 
       // Simulate receiving PONG by directly calling the PONG handler logic
-      const pongTimeoutId = (client as any).pongTimeoutId;
+      const pongTimeoutId = (client as unknown as Record<string, unknown>).pongTimeoutId;
       clearTimeout(pongTimeoutId);
-      (client as any).pongTimeoutId = null;
+      (client as unknown as Record<string, unknown>).pongTimeoutId = null;
 
       // Fast-forward time by 5000ms
       jest.advanceTimersByTime(5000);
@@ -113,9 +113,9 @@ describe('NgGoRpcClient', () => {
   describe('Teardown Trigger', () => {
     it('should send RST_STREAM frame when Observable is unsubscribed', (done) => {
       // Manually set the socket on the client (simulating successful connection)
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
-      (client as any).nextStreamId = 1;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).nextStreamId = 1;
 
       // Create a request
       const service = 'test.Service';
@@ -165,10 +165,10 @@ describe('NgGoRpcClient', () => {
 
     it('should not send RST_STREAM if WebSocket is already closed', () => {
       // Set up client with closed socket
-      mockSocket.readyState = 3; // WebSocket.CLOSED
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
-      (client as any).nextStreamId = 1;
+      Object.defineProperty(mockSocket, 'readyState', { value: 3, writable: true });
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).nextStreamId = 1;
 
       const service = 'test.Service';
       const method = 'TestMethod';
@@ -194,9 +194,9 @@ describe('NgGoRpcClient', () => {
 
     it('should send RST_STREAM with correct stream ID for multiple streams', () => {
       // Set up client
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
-      (client as any).nextStreamId = 1;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).nextStreamId = 1;
 
       const service = 'test.Service';
       const method = 'TestMethod';
@@ -235,9 +235,9 @@ describe('NgGoRpcClient', () => {
 
     it('should remove stream from map when unsubscribed', () => {
       // Set up client
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
-      (client as any).nextStreamId = 1;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).nextStreamId = 1;
 
       const service = 'test.Service';
       const method = 'TestMethod';
@@ -247,22 +247,22 @@ describe('NgGoRpcClient', () => {
       const subscription = observable.subscribe();
 
       // Stream should be in the map
-      expect((client as any).streamMap.has(1)).toBe(true);
+      expect((client as unknown as Record<string, unknown>).streamMap.has(1)).toBe(true);
 
       // Unsubscribe
       subscription.unsubscribe();
 
       // Stream should be removed from the map
-      expect((client as any).streamMap.has(1)).toBe(false);
+      expect((client as unknown as Record<string, unknown>).streamMap.has(1)).toBe(false);
     });
   });
 
   describe('Request Frame Verification', () => {
     it('should send HEADERS and DATA frames when making a request', () => {
       // Set up client
-      (client as any).socket = mockSocket;
-      (client as any).connected = true;
-      (client as any).nextStreamId = 1;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).nextStreamId = 1;
 
       const service = 'test.Service';
       const method = 'TestMethod';
@@ -302,9 +302,9 @@ describe('NgGoRpcClient', () => {
       // 0xFFFFFFFF = 4294967295. We need to check if it exceeds this.
       // But JS numbers are doubles, so we can go higher.
       // The protocol uses uint32, so we should fail if > 0xFFFFFFFF
-      (client as any).nextStreamId = 4294967295;
-      (client as any).connected = true;
-      (client as any).socket = mockSocket;
+      (client as unknown as Record<string, unknown>).nextStreamId = 4294967295;
+      (client as unknown as Record<string, unknown>).connected = true;
+      (client as unknown as Record<string, unknown>).socket = mockSocket;
 
       const service = 'test.Service';
       const method = 'TestMethod';
@@ -333,12 +333,12 @@ describe('NgGoRpcClient', () => {
     it('should clear reconnection timer on disconnect', () => {
       jest.useFakeTimers();
 
-      (client as any).reconnectAttempt = 1;
-      (client as any).reconnectionEnabled = true;
-      (client as any).currentUrl = 'ws://localhost:8080';
+      (client as unknown as Record<string, unknown>).reconnectAttempt = 1;
+      (client as unknown as Record<string, unknown>).reconnectionEnabled = true;
+      (client as unknown as Record<string, unknown>).currentUrl = 'ws://localhost:8080';
 
       // Schedule reconnection
-      (client as any).scheduleReconnection();
+      (client as unknown as Record<string, unknown>).scheduleReconnection();
 
       // Verify timer is set (we can't check ID easily in Jest, but we can check if it fires)
 
@@ -349,7 +349,7 @@ describe('NgGoRpcClient', () => {
       jest.advanceTimersByTime(100000);
 
       // WebSocket should NOT be created (attemptConnection not called)
-      expect((global as any).WebSocket).not.toHaveBeenCalled();
+      expect((global as unknown as { WebSocket: unknown }).WebSocket).not.toHaveBeenCalled();
 
       jest.useRealTimers();
     });
@@ -360,20 +360,18 @@ describe('NgGoRpcClient', () => {
       jest.useFakeTimers();
 
       // Set up client with known configuration
-      const mockNgZone = new MockNgZone() as any;
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
       const clientWithConfig = new NgGoRpcClient(mockNgZone, {
         baseReconnectDelay: 1000,
         maxReconnectDelay: 30000
       });
 
       // Set up reconnection state
-      (clientWithConfig as any).reconnectionEnabled = true;
-      (clientWithConfig as any).currentUrl = 'ws://localhost:8080';
+      (clientWithConfig as unknown as Record<string, unknown>).reconnectionEnabled = true;
+      (clientWithConfig as unknown as Record<string, unknown>).currentUrl = 'ws://localhost:8080';
 
-      // Mock WebSocket constructor to track calls
-      const wsConstructorCalls: number[] = [];
-      (global as any).WebSocket = jest.fn(() => {
-        wsConstructorCalls.push(Date.now());
+      // Mock WebSocket constructor
+      (global as unknown as { WebSocket: unknown }).WebSocket = jest.fn(() => {
         return mockSocket;
       });
 
@@ -381,10 +379,10 @@ describe('NgGoRpcClient', () => {
       const attemptConnectionSpy = jest.spyOn(clientWithConfig as any, 'attemptConnection');
 
       // Start with reconnectAttempt = 0
-      (clientWithConfig as any).reconnectAttempt = 0;
+      (clientWithConfig as unknown as Record<string, unknown>).reconnectAttempt = 0;
 
       // First reconnection: delay = min(30000, 1000 * 2^0) = 1000ms (1s)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -392,7 +390,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Second reconnection: delay = min(30000, 1000 * 2^1) = 2000ms (2s)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(1999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -400,7 +398,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Third reconnection: delay = min(30000, 1000 * 2^2) = 4000ms (4s)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(3999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -408,7 +406,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Fourth reconnection: delay = min(30000, 1000 * 2^3) = 8000ms (8s)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(7999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -416,7 +414,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Fifth reconnection: delay = min(30000, 1000 * 2^4) = 16000ms (16s)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(15999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -424,7 +422,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Sixth reconnection: delay = min(30000, 1000 * 2^5) = min(30000, 32000) = 30000ms (30s, capped)
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(29999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -432,7 +430,7 @@ describe('NgGoRpcClient', () => {
       attemptConnectionSpy.mockClear();
 
       // Seventh reconnection: delay should still be capped at 30000ms
-      (clientWithConfig as any).scheduleReconnection();
+      (clientWithConfig as unknown as Record<string, unknown>).scheduleReconnection();
       jest.advanceTimersByTime(29999);
       expect(attemptConnectionSpy).toHaveBeenCalledTimes(0);
       jest.advanceTimersByTime(1);
@@ -443,3 +441,7 @@ describe('NgGoRpcClient', () => {
   });
 
 });
+
+
+
+
