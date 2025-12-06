@@ -5,20 +5,20 @@
 Goal: Ensure `wsgrpc` (Go) and `@nggorpc/client` (Angular) are production-ready libraries, strictly isolated from their example implementations, and installable as standalone packages.
 
 ### 9.1 Go Library Isolation
-- [ ] **Task 9.1.1: Dependency Audit**
+- [x] **Task 9.1.1: Dependency Audit**
     - Verify `wsgrpc/go.mod` contains **only** library dependencies (`google.golang.org/grpc`, `google.golang.org/protobuf`, `nhooyr.io/websocket`).
     - Ensure NO `replace` directives exist in the library's `go.mod` (only allowed in `example/server/go.mod`).
     - Run `go mod tidy` in `wsgrpc/` to enforce a clean state.
-- [ ] **Task 9.1.2: Public API Verification**
+- [x] **Task 9.1.2: Public API Verification**
     - Review `wsgrpc/server.go` exports. Ensure internal structures (like `wsConnection`) remain unexported.
     - Verify `NewServer` options are sufficient for production use (TLS config, custom loggers).
 
 ### 9.2 Angular Library Packaging & Best Practices
-- [ ] **Task 9.2.1: Artifact Verification**
+- [x] **Task 9.2.1: Artifact Verification**
     - Run `npm run build:lib` (builds `projects/client`).
     - Inspect `dist/client/package.json`. Verify `peerDependencies` (`@angular/core`, `rxjs`) are present and `dependencies` (`tslib`) are minimal.
     - Verify `dist/client/fesm2022/` contains the flattened ES module bundle.
-- [ ] **Task 9.2.2: The "Consumer Test" (Critical)**
+- [x] **Task 9.2.2: The "Consumer Test" (Critical)**
     - *Current state uses `tsconfig.json` path mappings. We must test the actual build artifact.*
     1. Build the library: `npm run build:lib`
     2. Pack the library: `cd dist/client && npm pack` (Creates `nggorpc-client-1.0.0.tgz`).

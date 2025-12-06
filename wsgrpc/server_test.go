@@ -516,3 +516,167 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Error("Expected shutdown flag to be true")
 	}
 }
+
+// TestMetadataHandling tests SetHeader, SendHeader, and SetTrailer functionality
+func TestMetadataHandling(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	// Register a service that uses metadata operations
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "StreamGreet",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
+					// Test SetHeader
+					md := map[string][]string{
+						"x-custom-header": {"value1"},
+					}
+					if err := stream.SetHeader(md); err != nil {
+						return err
+					}
+
+					// Test adding more headers
+					md2 := map[string][]string{
+						"x-another-header": {"value2"},
+					}
+					if err := stream.SetHeader(md2); err != nil {
+						return err
+					}
+
+					// Test SendHeader
+					if err := stream.SendHeader(map[string][]string{
+						"x-sent-header": {"sent"},
+					}); err != nil {
+						return err
+					}
+
+					// Test that SendHeader fails after already sent
+					if err := stream.SendHeader(map[string][]string{}); err == nil {
+						t.Error("Expected error when calling SendHeader twice")
+					}
+
+					// Receive a message
+					var req pb.HelloRequest
+					if err := stream.RecvMsg(&req); err != nil {
+						return err
+					}
+
+					// Send response
+					resp := &pb.HelloResponse{
+						Message: fmt.Sprintf("Hello %s", req.GetName()),
+					}
+					if err := stream.SendMsg(resp); err != nil {
+						return err
+					}
+
+					// Test SetTrailer
+					stream.SetTrailer(map[string][]string{
+						"x-trailer": {"trailer-value"},
+					})
+
+					return nil
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}
+
+	server.RegisterService(desc, nil)
+
+	// Create test HTTP server
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	// Connect WebSocket client
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test complete")
+
+	// Start a stream
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/StreamGreet\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Send a request
+	req := &pb.HelloRequest{Name: "MetadataTest"}
+	data, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal request: %v", err)
+	}
+	dataFrame := encodeFrame(streamID, FlagDATA, data)
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send DATA: %v", err)
+	}
+
+	// Read response frames
+	readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	receivedHeaders := false
+	receivedData := false
+	receivedTrailers := false
+
+	for i := 0; i < 10; i++ {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			t.Logf("Failed to decode frame: %v", err)
+			continue
+		}
+
+		if frame.Flags&FlagHEADERS != 0 {
+			receivedHeaders = true
+			t.Logf("Received HEADERS frame: %s", string(frame.Payload))
+		}
+
+		if frame.Flags&FlagDATA != 0 {
+			receivedData = true
+		}
+
+		if frame.Flags&FlagTRAILERS != 0 {
+			receivedTrailers = true
+			t.Logf("Received TRAILERS frame: %s", string(frame.Payload))
+		}
+
+		if frame.Flags&FlagEOS != 0 {
+			break
+		}
+	}
+
+	if !receivedHeaders {
+		t.Error("Expected to receive HEADERS frame")
+	}
+
+	if !receivedData {
+		t.Error("Expected to receive DATA frame")
+	}
+
+	if !receivedTrailers {
+		t.Error("Expected to receive TRAILERS frame")
+	}
+}
