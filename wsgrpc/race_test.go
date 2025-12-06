@@ -79,22 +79,26 @@ func TestRaceCondition(t *testing.T) {
 			defer wg.Done()
 			streamID := uint32(id + 1)
 
-			// Send HEADERS
-			headers := "path: /greeter.Greeter/StreamGreet\n"
-			headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+ 		// Send HEADERS
+ 		headers := "path: /greeter.Greeter/StreamGreet\n"
+ 		headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
 
-			connMu.Lock()
-			conn.Write(ctx, websocket.MessageBinary, headersFrame)
-			connMu.Unlock()
+ 		connMu.Lock()
+ 		if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+ 			t.Errorf("Failed to write headers frame: %v", err)
+ 		}
+ 		connMu.Unlock()
 
-			// Send DATA
-			req := &pb.HelloRequest{Name: fmt.Sprintf("User%d", id)}
-			data, _ := proto.Marshal(req)
-			dataFrame := encodeFrame(streamID, FlagDATA, data)
+ 		// Send DATA
+ 		req := &pb.HelloRequest{Name: fmt.Sprintf("User%d", id)}
+ 		data, _ := proto.Marshal(req)
+ 		dataFrame := encodeFrame(streamID, FlagDATA, data)
 
-			connMu.Lock()
-			conn.Write(ctx, websocket.MessageBinary, dataFrame)
-			connMu.Unlock()
+ 		connMu.Lock()
+ 		if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+ 			t.Errorf("Failed to write data frame: %v", err)
+ 		}
+ 		connMu.Unlock()
 
 			// Sleep a tiny bit to allow some overlap
 			time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)

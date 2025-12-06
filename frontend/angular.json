@@ -37,6 +37,15 @@
               "zone.js/testing"
             ]
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/client/**/*.ts",
+              "projects/client/**/*.html"
+            ]
+          }
         }
       }
     },
@@ -150,6 +159,15 @@
               "projects/demo-app/src/styles.css"
             ],
             "scripts": []
+          }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/demo-app/**/*.ts",
+              "projects/demo-app/**/*.html"
+            ]
           }
         }
       }

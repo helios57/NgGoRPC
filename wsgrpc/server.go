@@ -47,15 +47,14 @@ type Server struct {
 
 // wsConnection manages a single WebSocket connection and its streams
 type wsConnection struct {
-	conn         *websocket.Conn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	sendChan     chan []byte
-	sendClosed   bool // Flag to track if sendChan is closed
-	mu           sync.Mutex
-	streamMap    map[uint32]*WebSocketServerStream
-	nextStreamID uint32
-	server       *Server // Reference to server for accessing options
+	conn       *websocket.Conn
+	ctx        context.Context
+	cancel     context.CancelFunc
+	sendChan   chan []byte
+	sendClosed bool // Flag to track if sendChan is closed
+	mu         sync.Mutex
+	streamMap  map[uint32]*WebSocketServerStream
+	server     *Server // Reference to server for accessing options
 }
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
@@ -473,7 +472,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		if frame.Flags&FlagPING != 0 {
 			log.Printf("[wsgrpc] Received PING, sending PONG")
 			pongFrame := encodeFrame(0, FlagPONG, []byte{})
-			wsConn.send(pongFrame)
+			if err := wsConn.send(pongFrame); err != nil {
+				log.Printf("[wsgrpc] Failed to send PONG: %v", err)
+			}
 			continue
 		}
 
@@ -522,13 +523,15 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			methodInfo, ok := s.methods[methodPath]
 			s.mu.RUnlock()
 
-			if !ok {
-				log.Printf("[wsgrpc] Method not found: %s", methodPath)
-				// Send RST_STREAM
-				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
-				wsConn.send(rstFrame)
-				continue
-			}
+ 		if !ok {
+ 			log.Printf("[wsgrpc] Method not found: %s", methodPath)
+ 			// Send RST_STREAM
+ 			rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
+ 			if err := wsConn.send(rstFrame); err != nil {
+ 				log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)
+ 			}
+ 			continue
+ 		}
 
 			// Create context with metadata derived from connection context
 			// This ensures cancellation propagates when connection closes
