@@ -330,7 +330,7 @@ func NewServer(opts ...ServerOption) *Server {
 	// Default options
 	options := ServerOption{
 		InsecureSkipVerify: false,           // Secure by default
-		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
+		MaxPayloadSize:     64 * 1024 * 1024, // 64MB default
 		IdleTimeout:        5 * time.Minute, // 5 minute default idle timeout
 		IdleCheckInterval:  1 * time.Minute, // 1 minute default check interval
 	}
@@ -388,6 +388,9 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(websocket.StatusInternalError, "internal error")
+
+	// Set the read limit for the connection
+	conn.SetReadLimit(int64(s.options.MaxPayloadSize))
 
 	log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
 

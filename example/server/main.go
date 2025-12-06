@@ -80,7 +80,7 @@ func main() {
 	// Create wsgrpc server with options
 	server := wsgrpc.NewServer(wsgrpc.ServerOption{
 		InsecureSkipVerify: true,            // Allow connections from any origin (for development)
-		MaxPayloadSize:     4 * 1024 * 1024, // 4MB
+		MaxPayloadSize:     64 * 1024 * 1024, // 64MB
 		IdleTimeout:        5 * time.Minute, // 5 minute idle timeout
 		IdleCheckInterval:  1 * time.Minute, // 1 minute check interval
 	})

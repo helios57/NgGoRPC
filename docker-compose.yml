@@ -27,6 +27,7 @@ services:
       context: ./e2e-tests
       dockerfile: Dockerfile
     container_name: nggorpc-e2e
+    ipc: host
     networks:
       - nggorpc-network
     environment:

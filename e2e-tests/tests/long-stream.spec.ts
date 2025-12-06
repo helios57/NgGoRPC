@@ -98,7 +98,7 @@ test.describe('The Long Stream Scenario', () => {
     // Step 6: Check backend container logs for context cancellation message
     // This verifies that the server received the cancellation signal
     try {
-      const logs = execSync('docker logs nggorpc-backend', {
+      const logs = execSync('docker logs nggorpc-backend 2>&1', {
         cwd: process.cwd(),
         encoding: 'utf-8',
         timeout: 5000
