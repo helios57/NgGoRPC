@@ -111,7 +111,7 @@ export class WebSocketRpcTransport {
   ): Signal<TResponse | undefined> {
     const observable = this.request(service, method, data);
     if (options) {
-      return toSignal(observable, options as any);
+      return toSignal(observable, options as ToSignalOptions<TResponse>);
     } else {
       return toSignal(observable);
     }
