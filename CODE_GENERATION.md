@@ -1,4 +1,3 @@
-<!--suppress ALL -->
 # Code Generation Guide for NgGoRPC
 
 NgGoRPC uses **standard Protocol Buffer tooling** without requiring custom code generators. This document explains how to generate client and server code from your `.proto` files.
@@ -115,8 +114,6 @@ The generated code includes:
 
 Implement the interface:
 
-<!-- noinspection GoUnresolvedReference -->
-<!-- noinspection GoStructInitializationWithoutFieldNames -->
 ```go
 package main
 
@@ -374,7 +371,11 @@ Add to `.bashrc` or `.zshrc` for persistence.
 Verify `ts-proto` options include `outputServices=generic-definitions`:
 
 ```json
-"proto:generate": "protoc ... --ts_proto_opt=outputServices=generic-definitions,..."
+{
+  "scripts": {
+    "proto:generate": "protoc ... --ts_proto_opt=outputServices=generic-definitions,..."
+  }
+}
 ```
 
 ### Issue: Generated Go Code Import Errors
