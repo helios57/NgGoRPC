@@ -417,7 +417,7 @@ export class NgGoRpcClient {
         this.socket.send(headersFrame);
 
         if (this.enableLogging) {
-            console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${methodPath}`);
+            console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${truncateForLog(methodPath)}`);
         }
 
         // Send DATA frame with request payload (with EOS flag for unary calls)
@@ -454,6 +454,17 @@ export class NgGoRpcClient {
             };
         });
     }
+}
+
+/**
+ * Helper function to truncate strings for logging
+ * If string is longer than 20 characters, returns first 20 chars plus size info
+ */
+function truncateForLog(s: string): string {
+    if (s.length <= 20) {
+        return s;
+    }
+    return `${s.substring(0, 20)}... (size: ${s.length})`;
 }
 
 export enum ConnectionState {

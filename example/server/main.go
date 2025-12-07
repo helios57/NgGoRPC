@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -17,14 +18,14 @@ type greeterServer struct {
 
 // SayHello implements the SayHello RPC method
 func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
-	log.Printf("[Greeter] Received SayHello request: name=%s", req.Name)
+	log.Printf("[Greeter] Received SayHello request: name=%s", truncateForLog(req.Name))
 
 	// Extract metadata to check for authorization header
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		authHeaders := md.Get("authorization")
 		if len(authHeaders) > 0 {
-			log.Printf("[Greeter] Authorization header received: %s", authHeaders[0])
+			log.Printf("[Greeter] Authorization header received: %s", truncateForLog(authHeaders[0]))
 
 			// For testing purposes, verify the token format
 			// In production, you would validate the JWT token here
@@ -32,7 +33,7 @@ func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb
 			if authHeaders[0] == expectedToken {
 				log.Printf("[Greeter] ✓ Valid test token received")
 			} else {
-				log.Printf("[Greeter] ⚠ Token mismatch: got '%s', expected '%s'", authHeaders[0], expectedToken)
+				log.Printf("[Greeter] ⚠ Token mismatch: got '%s', expected '%s'", truncateForLog(authHeaders[0]), truncateForLog(expectedToken))
 			}
 		} else {
 			log.Printf("[Greeter] No authorization header found")
@@ -45,7 +46,7 @@ func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb
 		Message: "Hello, " + req.Name + "!",
 	}
 
-	log.Printf("[Greeter] Sending response: %s", response.Message)
+	log.Printf("[Greeter] Sending response: %s", truncateForLog(response.Message))
 	return response, nil
 }
 
@@ -76,6 +77,15 @@ func (s *greeterServer) InfiniteTicker(req *pb.Empty, stream pb.Greeter_Infinite
 	}
 }
 
+// truncateForLog truncates a string for logging if it's longer than 20 characters
+// Returns first 20 characters followed by size info
+func truncateForLog(s string) string {
+	if len(s) <= 20 {
+		return s
+	}
+	return fmt.Sprintf("%s... (size: %d)", s[:20], len(s))
+}
+
 func main() {
 	// Create wsgrpc server with options
 	server := wsgrpc.NewServer(wsgrpc.ServerOption{
@@ -83,6 +93,7 @@ func main() {
 		MaxPayloadSize:     4 * 1024 * 1024, // 4MB
 		IdleTimeout:        5 * time.Minute, // 5 minute idle timeout
 		IdleCheckInterval:  1 * time.Minute, // 1 minute check interval
+		EnableLogging:      true,            // Enable debug logging for demo
 	})
 
 	// Register the Greeter service

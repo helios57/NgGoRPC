@@ -44,7 +44,7 @@ test.describe('Authentication Propagation', () => {
     
     // Make an RPC call
     const nameInput = page.locator('#greetingNameInput');
-    const sayHelloBtn = page.locator('#sayHelloBtn');
+    const sayHelloBtn = page.getByRole('button', { name: 'Say Hello', exact: true });
     const greetingResponse = page.locator('#greetingResponse');
     
     await nameInput.clear();

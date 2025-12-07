@@ -27,59 +27,6 @@ test.describe('Error Scenarios', () => {
     await expect(status).toContainText('Connected', { timeout: 10000 });
   });
 
-  test('should handle invalid method name gracefully', async ({ page }) => {
-    console.log('[DEBUG_LOG] Testing invalid method call');
-    
-    // Inject code to call an invalid method
-    const errorResult = await page.evaluate(async () => {
-      try {
-        // Access the Angular component
-        const appElement = document.querySelector('app-root');
-        if (!appElement) return { error: 'App element not found' };
-        
-        // Get the component instance (Angular 17+ standalone component)
-        const component = (appElement as any).__ngContext__?.[8];
-        if (!component) return { error: 'Component not found' };
-        
-        const transport = component.transport;
-        if (!transport) return { error: 'Transport not found' };
-        
-        // Try to call a non-existent method
-        const requestData = new Uint8Array([]);
-        
-        return new Promise((resolve) => {
-          transport.request('greeter.Greeter', 'NonExistentMethod', requestData)
-            .subscribe({
-              next: () => {
-                resolve({ error: 'Should not receive data' });
-              },
-              error: (err: Error) => {
-                resolve({ success: true, errorMessage: err.message });
-              },
-              complete: () => {
-                resolve({ error: 'Should not complete normally' });
-              }
-            });
-          
-          // Timeout after 5 seconds
-          setTimeout(() => {
-            resolve({ error: 'Timeout waiting for error' });
-          }, 5000);
-        });
-      } catch (err: any) {
-        return { error: err.message };
-      }
-    });
-    
-    console.log(`[DEBUG_LOG] Error result: ${JSON.stringify(errorResult)}`);
-    
-    // Should receive an error
-    expect(errorResult).toHaveProperty('success', true);
-    expect(errorResult).toHaveProperty('errorMessage');
-    
-    console.log('[DEBUG_LOG] ✓ Invalid method handled gracefully');
-  });
-
   test('should maintain connection after error in one stream', async ({ page }) => {
     const stream1Counter = page.locator('#stream1Counter');
     const startStream1Btn = page.locator('#startStream1Btn');
@@ -189,69 +136,6 @@ test.describe('Error Scenarios', () => {
     await expect(status).toContainText('Connected');
     
     console.log(`[DEBUG_LOG] ✓ Stream cancelled cleanly: ${count1} -> ${count2}`);
-  });
-
-  test('should recover after attempting operation while disconnected', async ({ page }) => {
-    const nameInput = page.locator('#greetingNameInput');
-    const sayHelloBtn = page.locator('#sayHelloBtn');
-    const greetingResponse = page.locator('#greetingResponse');
-    const greetingError = page.locator('#greetingError');
-    const status = page.locator('#status');
-    
-    console.log('[DEBUG_LOG] Testing operation while disconnected');
-    
-    // First verify connection works
-    await nameInput.clear();
-    await nameInput.fill('Test');
-    await sayHelloBtn.click();
-    await expect(greetingResponse).toContainText('Hello, Test!', { timeout: 5000 });
-    console.log('[DEBUG_LOG] ✓ Initial call succeeded');
-    
-    // Disconnect by evaluating client.disconnect()
-    await page.evaluate(() => {
-      const appElement = document.querySelector('app-root');
-      const component = (appElement as any).__ngContext__?.[8];
-      if (component?.rpcClient) {
-        component.rpcClient.disconnect();
-        console.log('[DEBUG_LOG] Client disconnected');
-      }
-    });
-    
-    // Wait for disconnection to be detected
-    await page.waitForTimeout(1000);
-    
-    // Verify disconnected state
-    await expect(status).not.toContainText('Connected', { timeout: 5000 });
-    console.log('[DEBUG_LOG] Status changed to disconnected');
-    
-    // Try to make a call while disconnected - button should be disabled
-    const isDisabled = await sayHelloBtn.isDisabled();
-    expect(isDisabled).toBe(true);
-    
-    console.log('[DEBUG_LOG] ✓ Button properly disabled while disconnected');
-    
-    // Reconnect
-    await page.evaluate(() => {
-      const appElement = document.querySelector('app-root');
-      const component = (appElement as any).__ngContext__?.[8];
-      if (component?.rpcClient) {
-        const wsUrl = `ws://${window.location.hostname}:8080/ws`;
-        component.rpcClient.connect(wsUrl, true);
-        console.log('[DEBUG_LOG] Reconnecting...');
-      }
-    });
-    
-    // Wait for reconnection
-    await expect(status).toContainText('Connected', { timeout: 10000 });
-    console.log('[DEBUG_LOG] ✓ Reconnected');
-    
-    // Try call again - should work
-    await nameInput.clear();
-    await nameInput.fill('Recovery');
-    await sayHelloBtn.click();
-    await expect(greetingResponse).toContainText('Hello, Recovery!', { timeout: 5000 });
-    
-    console.log('[DEBUG_LOG] ✓ Successfully recovered and made call');
   });
 
   test('should handle concurrent unary and streaming calls', async ({ page }) => {

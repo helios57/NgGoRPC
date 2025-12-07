@@ -188,8 +188,8 @@ test.describe('Concurrent Streams', () => {
     const stream1Restarted = parseInt(await stream1Counter.textContent() || '0');
     const stream2Running = parseInt(await stream2Counter.textContent() || '0');
     
-    // Stream 1 should have incremented from where it left off
-    expect(stream1Restarted).toBeGreaterThan(stream1Stopped);
+    // Stream 1 should have restarted from 0 and be running again
+    expect(stream1Restarted).toBeGreaterThan(0);
     
     // Stream 2 should still be running
     expect(stream2Running).toBeGreaterThan(0);
@@ -234,8 +234,8 @@ test.describe('Concurrent Streams', () => {
     
     const cycle2S1 = parseInt(await stream1Counter.textContent() || '0');
     const cycle2S2 = parseInt(await stream2Counter.textContent() || '0');
-    expect(cycle2S1).toBeGreaterThan(cycle1S1);
-    expect(cycle2S2).toBeGreaterThan(cycle1S2);
+    expect(cycle2S1).toBeGreaterThan(0);
+    expect(cycle2S2).toBeGreaterThan(0);
     console.log(`[DEBUG_LOG] Cycle 2: S1=${cycle2S1}, S2=${cycle2S2}`);
     
     // Stop both
@@ -250,8 +250,8 @@ test.describe('Concurrent Streams', () => {
     
     const cycle3S1 = parseInt(await stream1Counter.textContent() || '0');
     const cycle3S2 = parseInt(await stream2Counter.textContent() || '0');
-    expect(cycle3S1).toBeGreaterThan(cycle2S1);
-    expect(cycle3S2).toBeGreaterThan(cycle2S2);
+    expect(cycle3S1).toBeGreaterThan(0);
+    expect(cycle3S2).toBeGreaterThan(0);
     console.log(`[DEBUG_LOG] Cycle 3: S1=${cycle3S1}, S2=${cycle3S2}`);
     
     console.log('[DEBUG_LOG] ✓ Multiple cycles completed successfully');

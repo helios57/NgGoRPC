@@ -44,6 +44,8 @@ type ServerOption struct {
 	UnaryInterceptors []grpc.UnaryServerInterceptor
 	// StreamInterceptors are called for streaming RPCs
 	StreamInterceptors []grpc.StreamServerInterceptor
+	// EnableLogging enables debug logging (default: false)
+	EnableLogging bool
 }
 
 // Server represents a WebSocket-based gRPC server
@@ -67,23 +69,26 @@ type wsConnection struct {
 	streamMap  map[uint32]*WebSocketServerStream
 	server     *Server // Reference to server for accessing options
 	// Keep-alive tracking
-	lastPong time.Time
+	lastPong   time.Time
+	lastPongMu sync.Mutex
 }
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
 type WebSocketServerStream struct {
-	ctx          context.Context
-	cancel       context.CancelFunc // Stream-specific cancel function for RST_STREAM handling
-	conn         *wsConnection
-	streamID     uint32
-	recvChan     chan []byte
-	method       string
-	headerMu     sync.Mutex
-	header       metadata.MD
-	headerSent   bool
-	trailer      metadata.MD
-	lastActivity time.Time // Last time this stream had activity (for idle timeout)
-	activityMu   sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc // Stream-specific cancel function for RST_STREAM handling
+	conn           *wsConnection
+	streamID       uint32
+	recvChan       chan []byte
+	recvChanClosed bool       // Flag to track if recvChan is closed
+	recvChanMu     sync.Mutex // Mutex to protect recvChan closing
+	method         string
+	headerMu       sync.Mutex
+	header         metadata.MD
+	headerSent     bool
+	trailer        metadata.MD
+	lastActivity   time.Time // Last time this stream had activity (for idle timeout)
+	activityMu     sync.Mutex
 }
 
 // updateActivity updates the last activity timestamp for idle timeout tracking
@@ -91,6 +96,17 @@ func (s *WebSocketServerStream) updateActivity() {
 	s.activityMu.Lock()
 	s.lastActivity = time.Now()
 	s.activityMu.Unlock()
+}
+
+// safeCloseRecvChan safely closes the recvChan only once to prevent panic
+func (s *WebSocketServerStream) safeCloseRecvChan() {
+	s.recvChanMu.Lock()
+	defer s.recvChanMu.Unlock()
+
+	if !s.recvChanClosed {
+		s.recvChanClosed = true
+		close(s.recvChan)
+	}
 }
 
 // SetHeader implements grpc.ServerStream
@@ -151,7 +167,9 @@ func (s *WebSocketServerStream) SendHeader(md metadata.MD) error {
 	}
 
 	s.headerSent = true
-	log.Printf("[wsgrpc] Sent HEADERS frame for stream %d", s.streamID)
+	if s.conn.server.options.EnableLogging {
+		log.Printf("[wsgrpc] Sent HEADERS frame for stream %d", s.streamID)
+	}
 	return nil
 }
 
@@ -200,7 +218,9 @@ func (s *WebSocketServerStream) SendMsg(m interface{}) error {
 		return fmt.Errorf("failed to send frame: %w", err)
 	}
 
-	log.Printf("[wsgrpc] Sent DATA frame for stream %d, size: %d bytes", s.streamID, len(data))
+	if s.conn.server.options.EnableLogging {
+		log.Printf("[wsgrpc] Sent DATA frame for stream %d, size: %d bytes", s.streamID, len(data))
+	}
 	return nil
 }
 
@@ -226,7 +246,9 @@ func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
 			return fmt.Errorf("failed to unmarshal message: %w", err)
 		}
 
-		log.Printf("[wsgrpc] Received message for stream %d, size: %d bytes", s.streamID, len(data))
+		if s.conn.server.options.EnableLogging {
+			log.Printf("[wsgrpc] Received message for stream %d, size: %d bytes", s.streamID, len(data))
+		}
 		return nil
 
 	case <-s.ctx.Done():
@@ -258,13 +280,17 @@ func (c *wsConnection) writerLoop() {
 		case frame, ok := <-c.sendChan:
 			if !ok {
 				// Channel closed, cancel connection context to unblock read loop
-				log.Printf("[wsgrpc] Send channel closed, cancelling connection")
+				if c.server.options.EnableLogging {
+					log.Printf("[wsgrpc] Send channel closed, cancelling connection")
+				}
 				c.cancel()
 				return
 			}
 			// Write to WebSocket without mutex contention
 			if err := c.conn.Write(c.ctx, websocket.MessageBinary, frame); err != nil {
-				log.Printf("[wsgrpc] Write error in writer loop: %v, cancelling connection", err)
+				if c.server.options.EnableLogging {
+					log.Printf("[wsgrpc] Write error in writer loop: %v, cancelling connection", err)
+				}
 				c.cancel()
 				return
 			}
@@ -305,7 +331,9 @@ func (c *wsConnection) checkIdleStreams() {
 		stream.activityMu.Unlock()
 
 		if idleDuration > idleTimeout {
-			log.Printf("[wsgrpc] Stream %d idle for %v, closing due to timeout", streamID, idleDuration)
+			if c.server.options.EnableLogging {
+				log.Printf("[wsgrpc] Stream %d idle for %v, closing due to timeout", streamID, idleDuration)
+			}
 
 			// Cancel the stream's context
 			if stream.cancel != nil {
@@ -313,7 +341,7 @@ func (c *wsConnection) checkIdleStreams() {
 			}
 
 			// Close the receive channel to unblock any pending RecvMsg
-			close(stream.recvChan)
+			stream.safeCloseRecvChan()
 
 			// Remove from stream map
 			delete(c.streamMap, streamID)
@@ -346,6 +374,7 @@ func NewServer(opts ...ServerOption) *Server {
 		IdleCheckInterval:  1 * time.Minute, // 1 minute default check interval
 		KeepAliveInterval:  30 * time.Second,
 		KeepAliveTimeout:   10 * time.Second,
+		EnableLogging:      false, // Logging disabled by default
 	}
 
 	// Merge provided options
@@ -373,6 +402,9 @@ func NewServer(opts ...ServerOption) *Server {
 		}
 		if len(o.StreamInterceptors) > 0 {
 			merged.StreamInterceptors = append(merged.StreamInterceptors, o.StreamInterceptors...)
+		}
+		if o.EnableLogging {
+			merged.EnableLogging = true
 		}
 	}
 
@@ -406,7 +438,9 @@ func (s *Server) RegisterService(sd *grpc.ServiceDesc, ss interface{}) {
 			unaryHandler: &method,
 			srv:          ss,
 		}
-		log.Printf("[wsgrpc] Registered unary method: %s", methodPath)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Registered unary method: %s", methodPath)
+		}
 	}
 
 	// Register streaming methods
@@ -417,7 +451,9 @@ func (s *Server) RegisterService(sd *grpc.ServiceDesc, ss interface{}) {
 			streamHandler: &stream,
 			srv:           ss,
 		}
-		log.Printf("[wsgrpc] Registered streaming method: %s", methodPath)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Registered streaming method: %s", methodPath)
+		}
 	}
 }
 
@@ -430,16 +466,31 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: s.options.InsecureSkipVerify,
 	})
 	if err != nil {
-		log.Printf("[wsgrpc] Failed to accept WebSocket connection: %v", err)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Failed to accept WebSocket connection: %v", err)
+		}
 		return
 	}
 	defer func() { _ = conn.Close(websocket.StatusInternalError, "internal error") }()
 
-	log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
+	// Set the read limit to match our MaxPayloadSize (or use a reasonable default)
+	// The default WebSocket read limit is 32KB which is too small for large payloads
+	readLimit := int64(s.options.MaxPayloadSize)
+	if readLimit == 0 {
+		readLimit = 4 * 1024 * 1024 // 4MB default
+	}
+	// Add overhead for frame headers (12 bytes) plus some margin
+	conn.SetReadLimit(readLimit + 1024)
+
+	if s.options.EnableLogging {
+		log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
+	}
 
 	// Start processing frames in a goroutine
 	if err := s.handleConnection(r.Context(), conn); err != nil {
-		log.Printf("[wsgrpc] Connection error: %v", err)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Connection error: %v", err)
+		}
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
@@ -502,10 +553,14 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				case <-wsConn.ctx.Done():
 					return
 				case <-ticker.C:
+					// Record when we sent the PING
+					pingSentTime := time.Now()
 					// Send PING
 					ping := encodeFrame(0, FlagPING, []byte{})
 					if err := wsConn.send(ping); err != nil {
-						log.Printf("[wsgrpc] Failed to send PING: %v", err)
+						if s.options.EnableLogging {
+							log.Printf("[wsgrpc] Failed to send PING: %v", err)
+						}
 						return
 					}
 					// Wait for PONG within timeout in a blocking select
@@ -521,9 +576,14 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 						timer.Stop()
 						return
 					case <-timer.C:
-						// Check if we received a PONG recently
-						if time.Since(wsConn.lastPong) > timeout {
-							log.Printf("[wsgrpc] No PONG within timeout (%v). Closing connection.", timeout)
+						// Check if we received a PONG after we sent the PING
+						wsConn.lastPongMu.Lock()
+						lastPongTime := wsConn.lastPong
+						wsConn.lastPongMu.Unlock()
+						if lastPongTime.Before(pingSentTime) {
+							if s.options.EnableLogging {
+								log.Printf("[wsgrpc] No PONG within timeout (%v). Closing connection.", timeout)
+							}
 							_ = conn.Close(websocket.StatusPolicyViolation, "keepalive timeout")
 							return
 						}
@@ -542,35 +602,49 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 		// Ensure we received a binary message
 		if msgType != websocket.MessageBinary {
-			log.Printf("[wsgrpc] Warning: received non-binary message type: %v", msgType)
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Warning: received non-binary message type: %v", msgType)
+			}
 			continue
 		}
 
 		// Decode the frame
 		frame, err := decodeFrame(data, s.options.MaxPayloadSize)
 		if err != nil {
-			log.Printf("[wsgrpc] Frame decoding error: %v", err)
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Frame decoding error: %v", err)
+			}
 			continue
 		}
 
 		// Log the decoded frame details for validation
-		log.Printf("[wsgrpc] Received frame: StreamID=%d, Flags=0x%02x, PayloadSize=%d",
-			frame.StreamID, frame.Flags, len(frame.Payload))
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Received frame: StreamID=%d, Flags=0x%02x, PayloadSize=%d",
+				frame.StreamID, frame.Flags, len(frame.Payload))
+		}
 
 		// Handle PING frames - respond with PONG
 		if frame.Flags&FlagPING != 0 {
-			log.Printf("[wsgrpc] Received PING, sending PONG")
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Received PING, sending PONG")
+			}
 			pongFrame := encodeFrame(0, FlagPONG, []byte{})
 			if err := wsConn.send(pongFrame); err != nil {
-				log.Printf("[wsgrpc] Failed to send PONG: %v", err)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Failed to send PONG: %v", err)
+				}
 			}
 			continue
 		}
 
 		// Handle PONG frames - update lastPong timestamp
 		if frame.Flags&FlagPONG != 0 {
+			wsConn.lastPongMu.Lock()
 			wsConn.lastPong = time.Now()
-			log.Printf("[wsgrpc] Received PONG from client")
+			wsConn.lastPongMu.Unlock()
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Received PONG from client")
+			}
 			continue
 		}
 
@@ -606,7 +680,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				}
 			}
 
-			log.Printf("[wsgrpc] New stream %d for method: %s", frame.StreamID, methodPath)
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] New stream %d for method: %s", frame.StreamID, truncateForLog(methodPath))
+			}
 
 			// Look up the method handler
 			s.mu.RLock()
@@ -614,11 +690,15 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			s.mu.RUnlock()
 
 			if !ok {
-				log.Printf("[wsgrpc] Method not found: %s", methodPath)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Method not found: %s", truncateForLog(methodPath))
+				}
 				// Send RST_STREAM
 				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
 				if err := wsConn.send(rstFrame); err != nil {
-					log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)
+					if s.options.EnableLogging {
+						log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)
+					}
 				}
 				continue
 			}
@@ -656,7 +736,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			wsConn.mu.Unlock()
 
 			if !ok {
-				log.Printf("[wsgrpc] Stream %d not found for DATA frame", frame.StreamID)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Stream %d not found for DATA frame", frame.StreamID)
+				}
 				continue
 			}
 
@@ -665,24 +747,28 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 			// If EOS flag is set, close the receive channel
 			if frame.Flags&FlagEOS != 0 {
-				close(stream.recvChan)
+				stream.safeCloseRecvChan()
 			}
 		} else if frame.Flags&FlagRST_STREAM != 0 {
 			// RST_STREAM frame - client is cancelling the stream
 			wsConn.mu.Lock()
 			stream, ok := wsConn.streamMap[frame.StreamID]
 			if ok {
-				log.Printf("[wsgrpc] Stream %d context cancelled by RST_STREAM", frame.StreamID)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Stream %d context cancelled by RST_STREAM", frame.StreamID)
+				}
 				// Cancel the stream's context to stop the handler
 				if stream.cancel != nil {
 					stream.cancel()
 				}
 				// Close the receive channel to unblock any pending RecvMsg
-				close(stream.recvChan)
+				stream.safeCloseRecvChan()
 				// Remove from stream map
 				delete(wsConn.streamMap, frame.StreamID)
 			} else {
-				log.Printf("[wsgrpc] Stream %d not found for RST_STREAM frame", frame.StreamID)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Stream %d not found for RST_STREAM frame", frame.StreamID)
+				}
 			}
 			wsConn.mu.Unlock()
 		}
@@ -721,7 +807,14 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 
 		// For unary we don't have a pre-decoded request object; the handler uses RecvMsg internally.
 		// We pass nil as req since dec() will populate inside the original handler.
-		_, err = finalHandler(stream.ctx, nil)
+		resp, err := finalHandler(stream.ctx, nil)
+
+		// Send the response message if handler succeeded
+		if err == nil && resp != nil {
+			if sendErr := stream.SendMsg(resp); sendErr != nil {
+				err = sendErr
+			}
+		}
 	} else if methodInfo.streamHandler != nil {
 		// Streaming method handler with interceptor chain (if any)
 		info := &grpc.StreamServerInfo{
@@ -755,7 +848,9 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 	statusMsg := "OK"
 
 	if err != nil {
-		log.Printf("[wsgrpc] Handler error for stream %d: %v", stream.streamID, err)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Handler error for stream %d: %v", stream.streamID, err)
+		}
 		// Extract gRPC status code from error
 		if st, ok := status.FromError(err); ok {
 			statusCode = int(st.Code())
@@ -788,10 +883,14 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 
 	// Only send trailers if connection is still active
 	if err := stream.conn.send(trailersFrame); err != nil {
-		log.Printf("[wsgrpc] Failed to send trailers for stream %d: %v", stream.streamID, err)
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Failed to send trailers for stream %d: %v", stream.streamID, err)
+		}
 	}
 
-	log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, statusMsg)
+	if s.options.EnableLogging {
+		log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, truncateForLog(statusMsg))
+	}
 
 	// Clean up stream from map
 	stream.conn.mu.Lock()
@@ -802,14 +901,18 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 // ListenAndServe starts an HTTP server that handles WebSocket connections
 func (s *Server) ListenAndServe(addr string) error {
 	http.HandleFunc("/", s.HandleWebSocket)
-	log.Printf("[wsgrpc] Server listening on %s", addr)
+	if s.options.EnableLogging {
+		log.Printf("[wsgrpc] Server listening on %s", addr)
+	}
 	return http.ListenAndServe(addr, nil)
 }
 
 // Shutdown gracefully shuts down the server by signaling all active streams with RST_STREAM
 // and waiting for connections to close. It respects the provided context's deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Printf("[wsgrpc] Server shutdown initiated")
+	if s.options.EnableLogging {
+		log.Printf("[wsgrpc] Server shutdown initiated")
+	}
 
 	// Set shutdown flag to reject new connections
 	s.mu.Lock()
@@ -824,7 +927,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	for _, conn := range connectionsCopy {
 		conn.mu.Lock()
 		for streamID, stream := range conn.streamMap {
-			log.Printf("[wsgrpc] Sending RST_STREAM to stream %d during shutdown", streamID)
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Sending RST_STREAM to stream %d during shutdown", streamID)
+			}
 
 			// Build RST_STREAM frame with error code 0 (graceful shutdown)
 			rstPayload := make([]byte, 4)
@@ -841,7 +946,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			case conn.sendChan <- rstFrame:
 				// Frame queued successfully
 			case <-time.After(100 * time.Millisecond):
-				log.Printf("[wsgrpc] Timeout sending RST_STREAM for stream %d", streamID)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Timeout sending RST_STREAM for stream %d", streamID)
+				}
 			}
 
 			// Cancel the stream's context
@@ -868,13 +975,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.mu.RUnlock()
 
 		if remaining == 0 {
-			log.Printf("[wsgrpc] All connections closed, shutdown complete")
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] All connections closed, shutdown complete")
+			}
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
-			log.Printf("[wsgrpc] Shutdown context expired with %d connections remaining", remaining)
+			if s.options.EnableLogging {
+				log.Printf("[wsgrpc] Shutdown context expired with %d connections remaining", remaining)
+			}
 			return ctx.Err()
 		case <-ticker.C:
 			// Continue waiting
@@ -883,6 +994,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // Helper functions for parsing headers
+
+// truncateForLog truncates a string for logging if it's longer than 20 characters
+// Returns first 20 characters followed by size info
+func truncateForLog(s string) string {
+	if len(s) <= 20 {
+		return s
+	}
+	return fmt.Sprintf("%s... (size: %d)", s[:20], len(s))
+}
 
 // splitLines splits a string by newline characters
 func splitLines(s string) []string {

@@ -146,12 +146,12 @@ export class AppComponent implements OnInit, OnDestroy {
     ).subscribe({
       next: (response: HelloResponse) => {
         this.greetingResponse.set(response.message);
-        console.log('SayHello response:', response.message);
+        console.log('SayHello response:', truncateForLog(response.message));
       },
       error: (err: Error) => {
         this.greetingError.set(err.message);
         this.greetingResponse.set('');
-        console.error('SayHello error:', err);
+        console.error('SayHello error:', truncateForLog(err.message));
       },
       complete: () => {
         console.log('SayHello completed');
@@ -251,7 +251,7 @@ export class AppComponent implements OnInit, OnDestroy {
       const response = responseSignal();
       if (response) {
         this.signalGreetingResponse.set(response);
-        console.log('SayHello (Signal) response:', response.message);
+        console.log('SayHello (Signal) response:', truncateForLog(response.message));
       }
     });
   }
@@ -293,4 +293,15 @@ export class AppComponent implements OnInit, OnDestroy {
       this.signalStreamActive.set(false);
     }
   }
+}
+
+/**
+ * Helper function to truncate strings for logging
+ * If string is longer than 20 characters, returns first 20 chars plus size info
+ */
+function truncateForLog(s: string): string {
+  if (s.length <= 20) {
+    return s;
+  }
+  return `${s.substring(0, 20)}... (size: ${s.length})`;
 }
