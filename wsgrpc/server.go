@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"nhooyr.io/websocket"
 )
 
 // methodInfo stores the handler and service implementation for a method

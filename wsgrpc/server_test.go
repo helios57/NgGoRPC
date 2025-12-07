@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
-	"nhooyr.io/websocket"
 
 	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
 )

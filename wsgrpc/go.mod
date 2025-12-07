@@ -3,9 +3,9 @@ module github.com/helios57/NgGoRPC/wsgrpc
 go 1.25
 
 require (
+	github.com/coder/websocket v1.8.14
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
-	nhooyr.io/websocket v1.8.17
 )
 
 require (
