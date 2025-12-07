@@ -67,7 +67,9 @@ export class AppComponent implements OnInit, OnDestroy {
     this.rpcClient.connect(wsUrl, true);
 
     // Expose GreeterDefinition and component instance on window for E2E tests
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).GreeterDefinition = GreeterDefinition;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).appComponent = this;
 
     // Monitor connection status with periodic checks

@@ -41,7 +41,7 @@ func main() {
     srv := wsgrpc.NewServer(wsgrpc.ServerOption{})
     pb.RegisterGreeterServer(srv, &greeterServer{})
     
-    if err := srv.ListenAndServe(":8080", "/rpc"); err != nil {
+    if err := srv.ListenAndServe(":8080"); err != nil {
         log.Fatal(err)
     }
 }

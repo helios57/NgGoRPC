@@ -807,7 +807,8 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 
 		// For unary we don't have a pre-decoded request object; the handler uses RecvMsg internally.
 		// We pass nil as req since dec() will populate inside the original handler.
-		resp, err := finalHandler(stream.ctx, nil)
+		var resp interface{}
+		resp, err = finalHandler(stream.ctx, nil)
 
 		// Send the response message if handler succeeded
 		if err == nil && resp != nil {

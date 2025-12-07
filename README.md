@@ -35,7 +35,7 @@ NgGoRPC implements a lightweight binary framing protocol on top of WebSockets. T
 
 ## Project Status
 
-This project is currently in the development phase, as outlined in the [Concept.md](CONCEPT.md) and [Tasks.md](Tasks.md) documents.
+This project is currently in the development phase, as outlined in the [CONCEPT.md](CONCEPT.md) document.
 
 ---
 
@@ -212,7 +212,7 @@ cd nggorpc-client
 npm test
 ```
 
-Currently, the test framework needs to be configured. Based on [Tasks.md](Tasks.md), the following test types should be implemented:
+Currently, the test framework needs to be configured. The following test types should be implemented:
 
 - **Frame Codec Tests** (`frame.spec.ts`): Test encoding/decoding of binary frames with DataView
 - **Client Lifecycle Tests** (`client.spec.ts`): Test Observable lifecycle, including unsubscribe behavior that sends RST_STREAM
@@ -243,7 +243,7 @@ Run with coverage:
 go test -cover ./...
 ```
 
-Based on [Tasks.md](Tasks.md), tests should cover:
+Tests should cover:
 
 - **Frame Encoding/Decoding** (`frame_test.go`): Verify binary frame format matches specification
 - **Stream ID Management**: Test that server accepts client-initiated (odd) Stream IDs
@@ -267,7 +267,7 @@ go run main.go
 
 2. Configure an Angular application to use the `nggorpc-client` library and point it to `ws://localhost:8080`
 
-**Test Scenarios** (as defined in [Tasks.md](Tasks.md)):
+**Test Scenarios**:
 
 - **Unary Call**: Send request, verify response, check stream closes
 - **Server Streaming**: Verify client receives all messages, UI remains responsive
@@ -521,4 +521,4 @@ If you experience performance issues during high-frequency streaming:
 
 ---
 
-*For detailed architectural information, see [Concept.md](CONCEPT.md). For implementation status and roadmap, see [Tasks.md](Tasks.md).*
+*For detailed architectural information, see [CONCEPT.md](CONCEPT.md).*
