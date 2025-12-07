@@ -11,7 +11,9 @@ COPY . .
 WORKDIR /build/example/server
 
 # Download dependencies
-RUN go mod download
+# Install git for fetching modules from VCS and download deps
+RUN apk add --no-cache git \
+    && go mod download
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server .

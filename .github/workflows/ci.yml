@@ -10,6 +10,11 @@ jobs:
   go-build-test:
     name: Go - Build & Test
     runs-on: ubuntu-latest
+    env:
+      # Disable Go workspace mode so commands operate only on the wsgrpc module.
+      # This avoids trying to resolve example/server's dependency on a non-existent tag
+      # github.com/helios57/NgGoRPC/wsgrpc v0.0.0 when go.work is present at repo root.
+      GOWORK: off
     
     defaults:
       run:

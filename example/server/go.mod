@@ -3,9 +3,11 @@ module github.com/nggorpc/example/server
 go 1.25
 
 require (
-	github.com/helios57/NgGoRPC/wsgrpc v0.0.0
-	google.golang.org/grpc v1.77.0
+    github.com/helios57/NgGoRPC/wsgrpc v0.0.0
+    google.golang.org/grpc v1.77.0
 )
+
+replace github.com/helios57/NgGoRPC/wsgrpc => ../../wsgrpc
 
 require (
 	golang.org/x/net v0.47.0 // indirect
