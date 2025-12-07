@@ -52,6 +52,7 @@ type wsConnection struct {
 	cancel     context.CancelFunc
 	sendChan   chan []byte
 	sendClosed bool // Flag to track if sendChan is closed
+	sendMu     sync.Mutex
 	mu         sync.Mutex
 	streamMap  map[uint32]*WebSocketServerStream
 	server     *Server // Reference to server for accessing options
@@ -223,13 +224,12 @@ func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
 
 // send sends a frame to the connection using the actor pattern (channel-based writes)
 func (c *wsConnection) send(frame []byte) error {
-	// Check if channel is closed before attempting to send
-	c.mu.Lock()
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
 	if c.sendClosed {
-		c.mu.Unlock()
 		return fmt.Errorf("connection send channel is closed")
 	}
-	c.mu.Unlock()
 
 	select {
 	case c.sendChan <- frame:
@@ -311,17 +311,17 @@ func (c *wsConnection) checkIdleStreams() {
 
 // Close closes the connection and cleans up resources
 func (c *wsConnection) Close() {
-	if c.cancel != nil {
-		c.cancel()
-	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 
-	// Set closed flag before closing channel to prevent sends
-	c.mu.Lock()
 	if !c.sendClosed {
 		c.sendClosed = true
 		close(c.sendChan)
 	}
-	c.mu.Unlock()
+
+	if c.cancel != nil {
+		c.cancel()
+	}
 }
 
 // NewServer creates a new wsgrpc server with optional configuration
