@@ -131,6 +131,8 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     needs: [go-build-test, angular-build-test]
+    env:
+      COMPOSE_BAKE: true
     
     steps:
     - name: Checkout code

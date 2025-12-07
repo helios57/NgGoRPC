@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.57.0-jammy
+FROM mcr.microsoft.com/playwright:v1.57.0-noble
 
 WORKDIR /app
 
@@ -6,7 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y docker.io
 
 COPY package*.json ./
-RUN npm ci
+RUN npm i
 
 COPY . .
 

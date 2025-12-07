@@ -1,6 +1,6 @@
 module github.com/helios57/NgGoRPC/wsgrpc
 
-go 1.24.0
+go 1.25
 
 require (
 	google.golang.org/grpc v1.77.0

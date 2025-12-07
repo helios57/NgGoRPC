@@ -50,7 +50,7 @@ This project is currently in the development phase, as outlined in the [Concept.
 - `ts-proto` plugin for TypeScript code generation
 
 **For the Go Server (`wsgrpc`):**
-- Go 1.21+
+- Go 1.25+
 - Protocol Buffers compiler (`protoc`)
 - `protoc-gen-go` and `protoc-gen-go-grpc` plugins
 
@@ -295,7 +295,7 @@ CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o server main.go
 Create a `Dockerfile`:
 
 ```dockerfile
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go build -o server example/server/main.go

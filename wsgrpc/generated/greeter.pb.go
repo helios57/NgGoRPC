@@ -219,7 +219,7 @@ const file_greeter_proto_rawDesc = "" +
 	"\x0eSayHelloStream\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse0\x01\x12G\n" +
 	"\x14SayHelloClientStream\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse(\x01\x12J\n" +
 	"\x15SayHelloBidirectional\x12\x15.greeter.HelloRequest\x1a\x16.greeter.HelloResponse(\x010\x01\x121\n" +
-	"\x0eInfiniteTicker\x12\x0e.greeter.Empty\x1a\r.greeter.Tick0\x01B-Z+github.com/nggorpc/wsgrpc/generated/greeterb\x06proto3"
+	"\x0eInfiniteTicker\x12\x0e.greeter.Empty\x1a\r.greeter.Tick0\x01B6Z4github.com/helios57/NgGoRPC/wsgrpc/generated/greeterb\x06proto3"
 
 var (
 	file_greeter_proto_rawDescOnce sync.Once

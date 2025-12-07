@@ -1,6 +1,6 @@
 # Multi-stage build for Go backend
 # Stage 1: Build the Go binary
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
