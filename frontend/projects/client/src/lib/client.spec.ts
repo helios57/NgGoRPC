@@ -71,6 +71,169 @@ describe('NgGoRpcClient', () => {
     }));
   });
 
+  describe('ConnectionState Observable', () => {
+    it('should emit Disconnected initially', (done) => {
+      client.connectionState$.subscribe(state => {
+        expect(state).toBe('Disconnected');
+        done();
+      });
+    });
+
+    it('should emit Connected when connection opens', (done) => {
+      const states: string[] = [];
+      client.connectionState$.subscribe(state => {
+        states.push(state);
+        if (states.length === 2) {
+          expect(states[0]).toBe('Disconnected');
+          expect(states[1]).toBe('Connected');
+          done();
+        }
+      });
+
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+    });
+
+    it('should emit Reconnecting then Disconnected when reconnection enabled and connection closes', fakeAsync(() => {
+      const states: string[] = [];
+      client.connectionState$.subscribe(state => {
+        states.push(state);
+      });
+
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+      tick();
+      mockSocket.onclose(new CloseEvent('close'));
+      tick();
+
+      expect(states).toContain('Disconnected');
+      expect(states).toContain('Connected');
+      expect(states).toContain('Reconnecting');
+    }));
+
+    it('should emit Disconnected without Reconnecting when reconnection disabled', fakeAsync(() => {
+      const states: string[] = [];
+      client.connectionState$.subscribe(state => {
+        states.push(state);
+      });
+
+      client.connect('ws://localhost:8080', false);
+      mockSocket.onopen(new Event('open'));
+      tick();
+      mockSocket.onclose(new CloseEvent('close'));
+      tick();
+
+      expect(states).toContain('Disconnected');
+      expect(states).toContain('Connected');
+      expect(states).not.toContain('Reconnecting');
+    }));
+  });
+
+  describe('Auto-Reconnection', () => {
+    it('should attempt reconnection with exponential backoff', fakeAsync(() => {
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const testClient = new NgGoRpcClient(mockNgZone, {
+        baseReconnectDelay: 1000,
+        maxReconnectDelay: 5000
+      });
+
+      testClient.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+      mockSocket.onclose(new CloseEvent('close'));
+
+      // First reconnection after 1s (2^0 * 1000ms)
+      tick(999);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(1);
+      tick(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
+
+      // Simulate second failure
+      mockSocket.onclose(new CloseEvent('close'));
+
+      // Second reconnection after 2s (2^1 * 1000ms)
+      tick(1999);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
+      tick(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(3);
+
+      testClient.disconnect();
+    }));
+
+    it('should cap reconnection delay at maxReconnectDelay', fakeAsync(() => {
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const testClient = new NgGoRpcClient(mockNgZone, {
+        baseReconnectDelay: 1000,
+        maxReconnectDelay: 3000
+      });
+
+      testClient.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      // Trigger multiple failures to reach cap
+      for (let i = 0; i < 5; i++) {
+        mockSocket.onclose(new CloseEvent('close'));
+        tick(3000); // Wait max delay
+      }
+
+      // After 5 attempts, delay should be capped at 3000ms
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const callCount = (window as any).WebSocket.calls.count();
+      expect(callCount).toBeGreaterThan(1);
+
+      testClient.disconnect();
+    }));
+
+    it('should reset reconnection attempt counter on successful connection', fakeAsync(() => {
+      const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
+      const testClient = new NgGoRpcClient(mockNgZone, {
+        baseReconnectDelay: 1000
+      });
+
+      testClient.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((testClient as any).reconnectAttempt).toBe(0);
+
+      mockSocket.onclose(new CloseEvent('close'));
+      tick(1000);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((testClient as any).reconnectAttempt).toBe(1);
+
+      mockSocket.onopen(new Event('open'));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((testClient as any).reconnectAttempt).toBe(0);
+
+      testClient.disconnect();
+    }));
+
+    it('should error out active streams with UNAVAILABLE when disconnected', fakeAsync(() => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      let errorReceived: unknown = null;
+      const obs = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+      obs.subscribe({
+        error: (err) => {
+          errorReceived = err;
+        }
+      });
+
+      mockSocket.onclose(new CloseEvent('close'));
+      tick();
+
+      expect(errorReceived).toBeDefined();
+      // Check if it's a GrpcError with UNAVAILABLE status
+      expect(errorReceived).toEqual(jasmine.objectContaining({
+        code: 14, // GrpcStatus.UNAVAILABLE
+        message: 'Connection lost'
+      }));
+    }));
+  });
+
   describe('Message Handling', () => {
     beforeEach(() => {
       client.connect('ws://localhost:8080');
@@ -134,7 +297,10 @@ describe('NgGoRpcClient', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (client as any).streamMap.set(1, subject);
       mockSocket.onclose(new CloseEvent('close'));
-      expect(subject.error).toHaveBeenCalledWith(new Error('Connection lost - UNAVAILABLE'));
+      expect(subject.error).toHaveBeenCalledWith(jasmine.objectContaining({
+        code: 14, // GrpcStatus.UNAVAILABLE
+        message: 'Connection lost'
+      }));
     });
   });
 

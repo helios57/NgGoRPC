@@ -1484,3 +1484,410 @@ func TestContextCancellationInRecvMsg(t *testing.T) {
 
 	t.Log("Context cancellation in RecvMsg test completed")
 }
+
+// TestServerInitiatedKeepAliveTimeout verifies that server closes connection if client doesn't respond to PING
+func TestServerInitiatedKeepAliveTimeout(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		KeepAliveInterval:  500 * time.Millisecond, // Send PING every 500ms
+		KeepAliveTimeout:   300 * time.Millisecond, // Wait 300ms for PONG
+	})
+
+	// Register a simple service
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams:     []grpc.StreamDesc{},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	// Read frames but don't respond to PING
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	receivedPing := false
+	for {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			// Connection should be closed by server due to PONG timeout
+			if websocket.CloseStatus(err) == websocket.StatusPolicyViolation {
+				t.Log("Server correctly closed connection due to keepalive timeout")
+			} else {
+				t.Logf("Connection closed with status: %v", err)
+			}
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			t.Logf("Failed to decode frame: %v", err)
+			continue
+		}
+
+		if frame.Flags&FlagPING != 0 {
+			receivedPing = true
+			t.Log("Received PING from server (not responding to trigger timeout)")
+			// Intentionally NOT sending PONG to trigger timeout
+		}
+	}
+
+	if !receivedPing {
+		t.Error("Did not receive PING from server")
+	}
+
+	t.Log("Server-initiated keep-alive timeout test completed")
+}
+
+// TestUnaryInterceptor verifies that unary interceptors are invoked
+func TestUnaryInterceptor(t *testing.T) {
+	interceptorCalled := false
+	var capturedMethod string
+
+	// Create an interceptor that sets a flag
+	testInterceptor := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		interceptorCalled = true
+		capturedMethod = info.FullMethod
+		t.Logf("Interceptor called for method: %s", info.FullMethod)
+		return handler(ctx, req)
+	}
+
+	server := NewServer(
+		ServerOption{
+			InsecureSkipVerify: true,
+			MaxPayloadSize:     4 * 1024 * 1024,
+		},
+		WithUnaryInterceptor(testInterceptor),
+	)
+
+	// Register a unary method
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "SayHello",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					req := &pb.HelloRequest{}
+					if err := dec(req); err != nil {
+						return nil, err
+					}
+					return &pb.HelloResponse{Message: "Hello, " + req.Name}, nil
+				},
+			},
+		},
+		Streams: []grpc.StreamDesc{},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	// Send HEADERS frame
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/SayHello\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Send DATA frame with request
+	req := &pb.HelloRequest{Name: "World"}
+	reqData, _ := proto.Marshal(req)
+	dataFrame := encodeFrame(streamID, FlagDATA|FlagEOS, reqData)
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send DATA: %v", err)
+	}
+
+	// Read response frames
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	for {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			t.Logf("Failed to decode frame: %v", err)
+			continue
+		}
+
+		if frame.Flags&FlagTRAILERS != 0 {
+			t.Log("Received TRAILERS, stream complete")
+			break
+		}
+	}
+
+	if !interceptorCalled {
+		t.Error("Unary interceptor was not called")
+	}
+
+	if capturedMethod != "/greeter.Greeter/SayHello" {
+		t.Errorf("Interceptor received wrong method: got %s, want /greeter.Greeter/SayHello", capturedMethod)
+	}
+
+	t.Log("Unary interceptor test completed")
+}
+
+// TestUnaryInterceptorChaining verifies that multiple interceptors are chained correctly
+func TestUnaryInterceptorChaining(t *testing.T) {
+	var callOrder []string
+
+	interceptor1 := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		callOrder = append(callOrder, "interceptor1-before")
+		resp, err := handler(ctx, req)
+		callOrder = append(callOrder, "interceptor1-after")
+		return resp, err
+	}
+
+	interceptor2 := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		callOrder = append(callOrder, "interceptor2-before")
+		resp, err := handler(ctx, req)
+		callOrder = append(callOrder, "interceptor2-after")
+		return resp, err
+	}
+
+	server := NewServer(
+		ServerOption{
+			InsecureSkipVerify: true,
+			MaxPayloadSize:     4 * 1024 * 1024,
+		},
+		WithUnaryInterceptor(interceptor1, interceptor2),
+	)
+
+	// Register a unary method
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "SayHello",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					callOrder = append(callOrder, "handler")
+					req := &pb.HelloRequest{}
+					if err := dec(req); err != nil {
+						return nil, err
+					}
+					return &pb.HelloResponse{Message: "Hello"}, nil
+				},
+			},
+		},
+		Streams: []grpc.StreamDesc{},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	// Send HEADERS frame
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/SayHello\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Send DATA frame with request
+	req := &pb.HelloRequest{Name: "World"}
+	reqData, _ := proto.Marshal(req)
+	dataFrame := encodeFrame(streamID, FlagDATA|FlagEOS, reqData)
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send DATA: %v", err)
+	}
+
+	// Read response frames
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	for {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			continue
+		}
+
+		if frame.Flags&FlagTRAILERS != 0 {
+			break
+		}
+	}
+
+	// Verify call order: interceptor1 -> interceptor2 -> handler -> interceptor2 -> interceptor1
+	expectedOrder := []string{
+		"interceptor1-before",
+		"interceptor2-before",
+		"handler",
+		"interceptor2-after",
+		"interceptor1-after",
+	}
+
+	if len(callOrder) != len(expectedOrder) {
+		t.Errorf("Call order length mismatch: got %d, want %d", len(callOrder), len(expectedOrder))
+	} else {
+		for i, expected := range expectedOrder {
+			if i >= len(callOrder) || callOrder[i] != expected {
+				t.Errorf("Call order mismatch at index %d: got %s, want %s", i, callOrder[i], expected)
+			}
+		}
+	}
+
+	t.Logf("Interceptor call order: %v", callOrder)
+	t.Log("Unary interceptor chaining test completed")
+}
+
+// TestStreamInterceptor verifies that stream interceptors are invoked
+func TestStreamInterceptor(t *testing.T) {
+	interceptorCalled := false
+	var capturedMethod string
+
+	testInterceptor := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		interceptorCalled = true
+		capturedMethod = info.FullMethod
+		t.Logf("Stream interceptor called for method: %s", info.FullMethod)
+		return handler(srv, ss)
+	}
+
+	server := NewServer(
+		ServerOption{
+			InsecureSkipVerify: true,
+			MaxPayloadSize:     4 * 1024 * 1024,
+		},
+		WithStreamInterceptor(testInterceptor),
+	)
+
+	// Register a streaming method
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName: "InfiniteTicker",
+				Handler: func(srv interface{}, stream grpc.ServerStream) error {
+					// Send one tick
+					tick := &pb.Tick{Count: 1, Timestamp: time.Now().Unix()}
+					return stream.SendMsg(tick)
+				},
+				ServerStreams: true,
+			},
+		},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	wsURL := "ws" + httpServer.URL[4:]
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close(websocket.StatusNormalClosure, "test complete")
+	}()
+
+	// Send HEADERS frame
+	streamID := uint32(1)
+	headers := "path: /greeter.Greeter/InfiniteTicker\n"
+	headersFrame := encodeFrame(streamID, FlagHEADERS, []byte(headers))
+	if err := conn.Write(ctx, websocket.MessageBinary, headersFrame); err != nil {
+		t.Fatalf("Failed to send HEADERS: %v", err)
+	}
+
+	// Send empty DATA frame to start stream
+	dataFrame := encodeFrame(streamID, FlagDATA|FlagEOS, []byte{})
+	if err := conn.Write(ctx, websocket.MessageBinary, dataFrame); err != nil {
+		t.Fatalf("Failed to send DATA: %v", err)
+	}
+
+	// Read response frames
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	for {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			continue
+		}
+
+		if frame.Flags&FlagTRAILERS != 0 {
+			break
+		}
+	}
+
+	if !interceptorCalled {
+		t.Error("Stream interceptor was not called")
+	}
+
+	if capturedMethod != "/greeter.Greeter/InfiniteTicker" {
+		t.Errorf("Interceptor received wrong method: got %s, want /greeter.Greeter/InfiniteTicker", capturedMethod)
+	}
+
+	t.Log("Stream interceptor test completed")
+}

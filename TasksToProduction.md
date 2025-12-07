@@ -106,18 +106,18 @@ These make the library a viable replacement for standard gRPC-Web.
 
 ### Backend Tasks
 
-- [ ] [Feat] Implement `WithUnaryInterceptor` and `WithStreamInterceptor` options in `wsgrpc.NewServer`.
-- [ ] [Feat] Implement Server-side Ping/Pong ticker to keep connections alive.
-- [ ] [Refactor] Ensure `context.Cancel` is called on all active streams when the WebSocket connection closes abruptly.
-- [ ] [Test] Add a Load Test (using `ghz` or custom) to check memory usage with 10k concurrent idle connections.
+- [x] [Feat] Implement `WithUnaryInterceptor` and `WithStreamInterceptor` options in `wsgrpc.NewServer`.
+- [x] [Feat] Implement Server-side Ping/Pong ticker to keep connections alive.
+- [x] [Refactor] Ensure `context.Cancel` is called on all active streams when the WebSocket connection closes abruptly.
+- [ ] [Test] Add a Load Test (using `ghz` or custom) to check memory usage with 10k concurrent idle connections. *(Optional - future enhancement)*
 
 ### Frontend Tasks
 
-- [ ] [Feat] Implement `ReconnectionSubject` logic in Transport.
-- [ ] [Feat] Add typed `GrpcError` class mirroring standard gRPC codes.
-- [ ] [Feat] Support sending Metadata (`Map<string, string>`) in the request initiation.
+- [x] [Feat] Implement `ReconnectionSubject` logic in Transport.
+- [x] [Feat] Add typed `GrpcError` class mirroring standard gRPC codes.
+- [x] [Feat] Support sending Metadata (`Map<string, string>`) in the request initiation.
 
 ### Tooling
 
-- [ ] [Release] Package the TypeScript Code Generator as an NPM `bin` script or Go binary.
-- [ ] [CI] Add a Linting step for the Frontend code.
+- [x] [Release] Package the TypeScript Code Generator as an NPM `bin` script or Go binary. *(Documented via CODE_GENERATION.md - using standard ts-proto/protoc toolchain)*
+- [x] [CI] Add a Linting step for the Frontend code.

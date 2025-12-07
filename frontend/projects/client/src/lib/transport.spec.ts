@@ -143,4 +143,99 @@ describe('WebSocketRpcTransport', () => {
       });
     }));
   });
+
+  describe('metadata support', () => {
+    it('should pass metadata to client.request', (done) => {
+      const requestData: TestRequest = { name: 'World' };
+      const encodedRequest = new Uint8Array([1, 2, 3]);
+      const encodedResponse = new Uint8Array([4, 5, 6]);
+      const decodedResponse: TestResponse = { message: 'Hello, World!' };
+      const metadata = { 'x-request-id': 'test-123', 'authorization': 'Bearer token' };
+
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
+      });
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
+
+      transport.request(
+        mockServiceDef,
+        mockServiceDef.methods['sayHello'],
+        requestData,
+        metadata
+      ).subscribe({
+        next: (response) => {
+          expect(mockClient.request).toHaveBeenCalledWith(
+            'test.TestService',
+            'SayHello',
+            encodedRequest,
+            metadata
+          );
+          expect(response).toEqual(decodedResponse);
+          done();
+        }
+      });
+    });
+
+    it('should work without metadata parameter', (done) => {
+      const requestData: TestRequest = { name: 'World' };
+      const encodedRequest = new Uint8Array([1, 2, 3]);
+      const encodedResponse = new Uint8Array([4, 5, 6]);
+      const decodedResponse: TestResponse = { message: 'Hello, World!' };
+
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
+      });
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
+
+      transport.request(
+        mockServiceDef,
+        mockServiceDef.methods['sayHello'],
+        requestData
+      ).subscribe({
+        next: (response) => {
+          expect(mockClient.request).toHaveBeenCalledWith(
+            'test.TestService',
+            'SayHello',
+            encodedRequest
+          );
+          expect(response).toEqual(decodedResponse);
+          done();
+        }
+      });
+    });
+
+    it('should handle empty metadata object', (done) => {
+      const requestData: TestRequest = { name: 'World' };
+      const encodedRequest = new Uint8Array([1, 2, 3]);
+      const encodedResponse = new Uint8Array([4, 5, 6]);
+      const decodedResponse: TestResponse = { message: 'Hello, World!' };
+      const metadata = {};
+
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
+      });
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
+
+      transport.request(
+        mockServiceDef,
+        mockServiceDef.methods['sayHello'],
+        requestData,
+        metadata
+      ).subscribe({
+        next: (response) => {
+          expect(mockClient.request).toHaveBeenCalledWith(
+            'test.TestService',
+            'SayHello',
+            encodedRequest,
+            metadata
+          );
+          expect(response).toEqual(decodedResponse);
+          done();
+        }
+      });
+    });
+  });
 });

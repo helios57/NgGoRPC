@@ -1,7 +1,8 @@
 import {NgZone} from '@angular/core';
-import {Observable, Subject} from 'rxjs';
+import {BehaviorSubject, Observable, Subject} from 'rxjs';
 import {decodeFrame, encodeFrame, FrameFlags} from './frame';
 import {WebSocketRpcTransport} from './transport';
+import {GrpcError, GrpcStatus} from './errors';
 
 /**
  * Configuration options for NgGoRpcClient
@@ -47,6 +48,10 @@ export class NgGoRpcClient {
     private authToken: string | null = null;
     private readonly pongTimeout = 5000; // 5 seconds timeout for PONG response
     private readonly enableLogging: boolean;
+
+    // Connection state tracking
+    private readonly _connectionState$ = new BehaviorSubject<ConnectionState>(ConnectionState.Disconnected);
+    readonly connectionState$ = this._connectionState$.asObservable();
 
     constructor(private ngZone: NgZone, config?: NgGoRpcConfig) {
         // Apply configuration with defaults
@@ -102,6 +107,7 @@ export class NgGoRpcClient {
                 this.connected = true;
                 this.reconnectAttempt = 0; // Reset reconnection counter on successful connection
                 this.startPingInterval();
+                this._connectionState$.next(ConnectionState.Connected);
             };
 
             this.socket.onmessage = (event: MessageEvent) => {
@@ -160,13 +166,13 @@ export class NgGoRpcClient {
                                 } else {
                                     // Non-OK status - emit error
                                     const errorMsg = grpcMessage || `gRPC error with status code ${grpcStatus}`;
-                                    subject.error(new Error(errorMsg));
+                                    subject.error(new GrpcError(grpcStatus as GrpcStatus, errorMsg));
                                 }
                                 this.streamMap.delete(frame.streamId);
                             }
 
                             if (frame.flags & FrameFlags.RST_STREAM) {
-                                subject.error(new Error('Stream reset by server'));
+                                subject.error(new GrpcError(GrpcStatus.CANCELLED, 'Stream reset by server'));
                                 this.streamMap.delete(frame.streamId);
                             }
                         });
@@ -196,9 +202,11 @@ export class NgGoRpcClient {
 
                 // Error out all active streams with UNAVAILABLE status
                 this.errorOutActiveStreams();
+                this._connectionState$.next(ConnectionState.Disconnected);
 
                 // Attempt reconnection if enabled
                 if (this.reconnectionEnabled) {
+                    this._connectionState$.next(ConnectionState.Reconnecting);
                     this.scheduleReconnection();
                 }
             };
@@ -211,7 +219,7 @@ export class NgGoRpcClient {
     private errorOutActiveStreams(): void {
         this.ngZone.run(() => {
             this.streamMap.forEach((subject) => {
-                subject.error(new Error('Connection lost - UNAVAILABLE'));
+                subject.error(new GrpcError(GrpcStatus.UNAVAILABLE, 'Connection lost'));
             });
             this.streamMap.clear();
         });
@@ -365,9 +373,10 @@ export class NgGoRpcClient {
      * @param service - The service name (e.g., 'mypackage.Greeter')
      * @param method - The method name (e.g., 'SayHello')
      * @param data - The serialized Protobuf request data
+     * @param metadata - Optional metadata headers to send with the request (e.g., x-request-id, custom headers)
      * @returns An Observable that emits the response data
      */
-    request(service: string, method: string, data: Uint8Array): Observable<Uint8Array> {
+    request(service: string, method: string, data: Uint8Array, metadata?: Record<string, string>): Observable<Uint8Array> {
         if (!this.socket || !this.connected) {
             throw new Error('WebSocket is not connected');
         }
@@ -396,6 +405,11 @@ export class NgGoRpcClient {
         // Include authorization header if token is set
         if (this.authToken) {
             headersText += `\nauthorization: Bearer ${this.authToken}`;
+        }
+        if (metadata) {
+            for (const [k, v] of Object.entries(metadata)) {
+                headersText += `\n${k}: ${v}`;
+            }
         }
 
         const headersPayload = new TextEncoder().encode(headersText);
@@ -440,4 +454,10 @@ export class NgGoRpcClient {
             };
         });
     }
+}
+
+export enum ConnectionState {
+    Disconnected = 'Disconnected',
+    Reconnecting = 'Reconnecting',
+    Connected = 'Connected',
 }

@@ -34,6 +34,16 @@ type ServerOption struct {
 	IdleTimeout time.Duration
 	// IdleCheckInterval sets how often to check for idle streams (default 1 minute)
 	IdleCheckInterval time.Duration
+	// KeepAliveInterval defines how often the server sends a PING frame to clients to keep
+	// connections alive (default 30s). Set to 0 to disable server-initiated keepalives.
+	KeepAliveInterval time.Duration
+	// KeepAliveTimeout defines how long the server waits for a PONG after sending a PING
+	// before closing the connection (default 10s). Ignored if KeepAliveInterval is 0.
+	KeepAliveTimeout time.Duration
+	// UnaryInterceptors are called for unary RPCs
+	UnaryInterceptors []grpc.UnaryServerInterceptor
+	// StreamInterceptors are called for streaming RPCs
+	StreamInterceptors []grpc.StreamServerInterceptor
 }
 
 // Server represents a WebSocket-based gRPC server
@@ -56,6 +66,8 @@ type wsConnection struct {
 	mu         sync.Mutex
 	streamMap  map[uint32]*WebSocketServerStream
 	server     *Server // Reference to server for accessing options
+	// Keep-alive tracking
+	lastPong time.Time
 }
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
@@ -194,7 +206,7 @@ func (s *WebSocketServerStream) SendMsg(m interface{}) error {
 
 // RecvMsg implements grpc.ServerStream - receives a message from the client
 func (s *WebSocketServerStream) RecvMsg(m interface{}) error {
-	// Wait for data from the read loop
+	// Wait for data from the read loop or context cancellation
 	select {
 	case data, ok := <-s.recvChan:
 		if !ok {
@@ -327,23 +339,58 @@ func (c *wsConnection) Close() {
 // NewServer creates a new wsgrpc server with optional configuration
 func NewServer(opts ...ServerOption) *Server {
 	// Default options
-	options := ServerOption{
+	merged := ServerOption{
 		InsecureSkipVerify: false,           // Secure by default
 		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
 		IdleTimeout:        5 * time.Minute, // 5 minute default idle timeout
 		IdleCheckInterval:  1 * time.Minute, // 1 minute default check interval
+		KeepAliveInterval:  30 * time.Second,
+		KeepAliveTimeout:   10 * time.Second,
 	}
 
-	// Apply provided options
-	if len(opts) > 0 {
-		options = opts[0]
+	// Merge provided options
+	for _, o := range opts {
+		if o.InsecureSkipVerify {
+			merged.InsecureSkipVerify = true
+		}
+		if o.MaxPayloadSize != 0 {
+			merged.MaxPayloadSize = o.MaxPayloadSize
+		}
+		if o.IdleTimeout != 0 {
+			merged.IdleTimeout = o.IdleTimeout
+		}
+		if o.IdleCheckInterval != 0 {
+			merged.IdleCheckInterval = o.IdleCheckInterval
+		}
+		if o.KeepAliveInterval != 0 {
+			merged.KeepAliveInterval = o.KeepAliveInterval
+		}
+		if o.KeepAliveTimeout != 0 {
+			merged.KeepAliveTimeout = o.KeepAliveTimeout
+		}
+		if len(o.UnaryInterceptors) > 0 {
+			merged.UnaryInterceptors = append(merged.UnaryInterceptors, o.UnaryInterceptors...)
+		}
+		if len(o.StreamInterceptors) > 0 {
+			merged.StreamInterceptors = append(merged.StreamInterceptors, o.StreamInterceptors...)
+		}
 	}
 
 	return &Server{
 		methods:     make(map[string]*methodInfo),
-		options:     options,
+		options:     merged,
 		connections: make(map[*wsConnection]struct{}),
 	}
+}
+
+// WithUnaryInterceptor adds unary interceptors via NewServer options
+func WithUnaryInterceptor(interceptors ...grpc.UnaryServerInterceptor) ServerOption {
+	return ServerOption{UnaryInterceptors: interceptors}
+}
+
+// WithStreamInterceptor adds stream interceptors via NewServer options
+func WithStreamInterceptor(interceptors ...grpc.StreamServerInterceptor) ServerOption {
+	return ServerOption{StreamInterceptors: interceptors}
 }
 
 // RegisterService registers a gRPC service with its handlers
@@ -422,6 +469,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 		sendChan:  make(chan []byte, 100), // Buffered channel to reduce blocking
 		streamMap: make(map[uint32]*WebSocketServerStream),
 		server:    s, // Reference to server for accessing options
+		lastPong:  time.Now(),
 	}
 
 	// Register the connection
@@ -443,6 +491,47 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 	// Start the idle timeout monitor goroutine
 	go wsConn.idleTimeoutMonitor()
+
+	// Start server-initiated keepalive if enabled
+	if s.options.KeepAliveInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(s.options.KeepAliveInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-wsConn.ctx.Done():
+					return
+				case <-ticker.C:
+					// Send PING
+					ping := encodeFrame(0, FlagPING, []byte{})
+					if err := wsConn.send(ping); err != nil {
+						log.Printf("[wsgrpc] Failed to send PING: %v", err)
+						return
+					}
+					// Wait for PONG within timeout in a blocking select
+					timeout := s.options.KeepAliveTimeout
+					if timeout <= 0 {
+						timeout = 10 * time.Second
+					}
+					// We can't block the loop waiting for a specific event, rely on lastPong update
+					// Sleep for timeout and then check lastPong freshness
+					timer := time.NewTimer(timeout)
+					select {
+					case <-wsConn.ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+						// Check if we received a PONG recently
+						if time.Since(wsConn.lastPong) > timeout {
+							log.Printf("[wsgrpc] No PONG within timeout (%v). Closing connection.", timeout)
+							_ = conn.Close(websocket.StatusPolicyViolation, "keepalive timeout")
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
 
 	for {
 		// Read a message from the WebSocket
@@ -478,8 +567,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			continue
 		}
 
-		// Handle PONG frames - just log
+		// Handle PONG frames - update lastPong timestamp
 		if frame.Flags&FlagPONG != 0 {
+			wsConn.lastPong = time.Now()
 			log.Printf("[wsgrpc] Received PONG from client")
 			continue
 		}
@@ -605,14 +695,57 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 
 	// Invoke the appropriate handler based on method type
 	if methodInfo.unaryHandler != nil {
-		// Unary method handler
-		dec := func(m interface{}) error {
-			return stream.RecvMsg(m)
+		// Unary method handler with interceptor chain (if any)
+		info := &grpc.UnaryServerInfo{
+			Server:     methodInfo.srv,
+			FullMethod: stream.method,
 		}
-		_, err = methodInfo.unaryHandler.Handler(methodInfo.srv, stream.ctx, dec, nil)
+
+		handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+			dec := func(m interface{}) error { return stream.RecvMsg(m) }
+			return methodInfo.unaryHandler.Handler(methodInfo.srv, ctx, dec, nil)
+		}
+
+		// Chain interceptors from server options
+		finalHandler := handler
+		if len(s.options.UnaryInterceptors) > 0 {
+			// Apply in reverse order so the first in the slice is outermost
+			for i := len(s.options.UnaryInterceptors) - 1; i >= 0; i-- {
+				interceptor := s.options.UnaryInterceptors[i]
+				next := finalHandler
+				finalHandler = func(ctx context.Context, req interface{}) (interface{}, error) {
+					return interceptor(ctx, req, info, next)
+				}
+			}
+		}
+
+		// For unary we don't have a pre-decoded request object; the handler uses RecvMsg internally.
+		// We pass nil as req since dec() will populate inside the original handler.
+		_, err = finalHandler(stream.ctx, nil)
 	} else if methodInfo.streamHandler != nil {
-		// Streaming method handler
-		err = methodInfo.streamHandler.Handler(methodInfo.srv, stream)
+		// Streaming method handler with interceptor chain (if any)
+		info := &grpc.StreamServerInfo{
+			FullMethod:     stream.method,
+			IsClientStream: false,
+			IsServerStream: true,
+		}
+
+		h := func(srv interface{}, ss grpc.ServerStream) error {
+			return methodInfo.streamHandler.Handler(srv, ss)
+		}
+
+		final := h
+		if len(s.options.StreamInterceptors) > 0 {
+			for i := len(s.options.StreamInterceptors) - 1; i >= 0; i-- {
+				interceptor := s.options.StreamInterceptors[i]
+				next := final
+				final = func(srv interface{}, ss grpc.ServerStream) error {
+					return interceptor(srv, ss, info, next)
+				}
+			}
+		}
+
+		err = final(methodInfo.srv, stream)
 	} else {
 		err = fmt.Errorf("no handler found for method")
 	}

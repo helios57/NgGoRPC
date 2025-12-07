@@ -50,7 +50,8 @@ export interface Rpc {
   request(
     service: string,
     method: string,
-    data: Uint8Array
+    data: Uint8Array,
+    metadata?: Record<string, string>
   ): Observable<Uint8Array>;
 }
 
@@ -68,12 +69,14 @@ export class WebSocketRpcTransport {
    * @param service - The service definition
    * @param method - The method descriptor from the service definition
    * @param data - The request data (optional, will use empty message if not provided)
+   * @param metadata - Optional metadata headers to send with the request (e.g., authorization, request-id)
    * @returns An Observable that emits the decoded response
    */
   request<TRequest, TResponse>(
     service: ServiceDefinition,
     method: MethodDescriptor<TRequest, TResponse>,
-    data?: TRequest
+    data?: TRequest,
+    metadata?: Record<string, string>
   ): Observable<TResponse> {
     const serviceDef = service as ServiceDefinition;
     const methodDesc = method as MethodDescriptor<TRequest, TResponse>;
@@ -89,7 +92,11 @@ export class WebSocketRpcTransport {
     }
 
     // Make request and automatically decode response
-    return this.client.request(serviceDef.fullName, methodDesc.name, encodedData).pipe(
+    const resp$ = metadata
+      ? this.client.request(serviceDef.fullName, methodDesc.name, encodedData, metadata)
+      : this.client.request(serviceDef.fullName, methodDesc.name, encodedData);
+
+    return resp$.pipe(
       map((responseData: Uint8Array) => methodDesc.responseType.decode(responseData))
     );
   }
