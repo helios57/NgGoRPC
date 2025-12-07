@@ -94,7 +94,7 @@ go get github.com/helios57/NgGoRPC/wsgrpc@latest
 
 Or add it to your `go.mod`:
 
-```go
+```gomod
 require github.com/helios57/NgGoRPC/wsgrpc v1.0.0
 ```
 
@@ -174,7 +174,7 @@ go build ./...
 
 Add the dependency to your `go.mod`:
 
-```go
+```gomod
 require github.com/helios57/NgGoRPC/wsgrpc v1.0.0
 ```
 
@@ -389,8 +389,8 @@ If you encounter CORS errors when connecting from your Angular app to the Go ser
 
 In your Go server, configure CORS headers properly. The `wsgrpc` library doesn't handle HTTP upgrade requests automatically—you need to set up appropriate middleware:
 
-```go
-// Add CORS middleware before upgrading to WebSocket
+```text
+// Add CORS middleware before upgrading to WebSocket (Go snippet)
 func corsMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         origin := r.Header.Get("Origin")
@@ -476,21 +476,21 @@ If `setAuthToken()` doesn't work as expected:
 1. **Verify the token is sent**: Check browser DevTools → Network → your WebSocket connection → Messages. The first `HEADERS` frame should contain the authorization metadata.
 
 2. **Server-side extraction**: Ensure your Go server extracts metadata correctly:
-   ```go
-   func (s *greeterService) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
-       md, ok := metadata.FromIncomingContext(ctx)
-       if !ok {
-           return nil, status.Error(codes.Unauthenticated, "no metadata")
-       }
-       
-       tokens := md.Get("authorization")
-       if len(tokens) == 0 {
-           return nil, status.Error(codes.Unauthenticated, "no auth token")
-       }
-       
-       // Validate tokens[0]...
-   }
-   ```
+   ```text
+func (s *greeterService) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
+    md, ok := metadata.FromIncomingContext(ctx)
+    if !ok {
+        return nil, status.Error(codes.Unauthenticated, "no metadata")
+    }
+    
+    tokens := md.Get("authorization")
+    if len(tokens) == 0 {
+        return nil, status.Error(codes.Unauthenticated, "no auth token")
+    }
+    
+    // Validate tokens[0]...
+}
+```
 
 3. **Token format**: By default, the token is sent as-is. If your server expects `Bearer <token>`, prepend it:
    ```typescript
@@ -514,7 +514,9 @@ If you experience performance issues during high-frequency streaming:
    ```typescript
    service.streamPrices(request).pipe(
      throttleTime(100)  // Max 10 updates/second
-   ).subscribe(...)
+   ).subscribe(() => {
+     // handle values here
+   });
    ```
 
 ---

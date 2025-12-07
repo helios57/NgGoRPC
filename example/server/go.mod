@@ -15,5 +15,3 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
 )
-
-replace github.com/helios57/NgGoRPC/wsgrpc => ../../wsgrpc
