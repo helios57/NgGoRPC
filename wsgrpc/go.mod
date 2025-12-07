@@ -5,7 +5,7 @@ go 1.25
 require (
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
-	nhooyr.io/websocket v1.8.10
+	nhooyr.io/websocket v1.8.17
 )
 
 require (
