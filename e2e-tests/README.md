@@ -84,6 +84,43 @@ Tests client reconnection logic when the backend becomes unavailable.
 - Client can reconnect after backend restarts
 - New streams can be initiated after reconnection
 
+### 3. Concurrent Streams Scenario (`concurrent-streams.spec.ts`)
+
+Tests that multiple streams can run simultaneously over the same WebSocket connection.
+
+**What it tests:**
+- Multiplexing capability (key feature of the protocol)
+- Two streams running concurrently and independently
+- Verifies no cross-talk or interference between streams
+
+### 4. Large Payload Scenario (`large-payload.spec.ts`)
+
+Tests that the transport handles large payloads correctly.
+
+**What it tests:**
+- Sending and receiving large payloads (e.g., 3MB)
+- Verifies fragmentation and reassembly work correctly
+- Ensures no data corruption for large messages
+
+### 5. Resource Exhaustion Scenario (`resource-exhaustion.spec.ts`)
+
+Tests resource exhaustion scenarios and DoS protection.
+
+**What it tests:**
+- Concurrent stream limits (default: 100 streams)
+- Proper error handling when limits are exceeded (RESOURCE_EXHAUSTED)
+- System stability under load
+
+### 6. Error Scenarios (`error-scenarios.spec.ts`)
+
+Tests that the library handles error conditions gracefully.
+
+**What it tests:**
+- Invalid method calls
+- Network disruptions
+- Stream maintenance after errors in other streams
+- Graceful error reporting to the client
+
 ## Debug Logs
 
 Tests output debug logs prefixed with `[DEBUG_LOG]` to help diagnose issues:

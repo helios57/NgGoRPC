@@ -35,7 +35,7 @@ NgGoRPC implements a lightweight binary framing protocol on top of WebSockets. T
 
 ## Project Status
 
-This project is currently in the development phase, as outlined in the [Concept.md](Concept.md) and [Tasks.md](Tasks.md) documents.
+This project is currently in the development phase, as outlined in the [Concept.md](CONCEPT.md) and [Tasks.md](Tasks.md) documents.
 
 ---
 
@@ -521,4 +521,4 @@ If you experience performance issues during high-frequency streaming:
 
 ---
 
-*For detailed architectural information, see [Concept.md](Concept.md). For implementation status and roadmap, see [Tasks.md](Tasks.md).*
+*For detailed architectural information, see [Concept.md](CONCEPT.md). For implementation status and roadmap, see [Tasks.md](Tasks.md).*

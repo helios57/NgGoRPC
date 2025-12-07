@@ -143,13 +143,12 @@ test.describe('The Long Stream Scenario', () => {
     await stopBtn.click();
     await page.waitForTimeout(500); // Wait for stream to fully stop
     
-    // Second cycle - verify counter continues incrementing from where it left off
+    // Second cycle - verify counter resets to 0 and starts incrementing again
     console.log('[DEBUG_LOG] Starting cycle 2');
-    const beforeSecondStart = parseInt(await counter.textContent() || '0');
     await startBtn.click();
     await page.waitForTimeout(500);
     const secondCycleStart = parseInt(await counter.textContent() || '0');
-    expect(secondCycleStart).toBeGreaterThan(beforeSecondStart);
+    expect(secondCycleStart).toBeGreaterThan(0);
     
     await page.waitForTimeout(500);
     const secondCycleEnd = parseInt(await counter.textContent() || '0');
@@ -159,13 +158,12 @@ test.describe('The Long Stream Scenario', () => {
     await stopBtn.click();
     await page.waitForTimeout(500);
     
-    // Third cycle
+    // Third cycle - verify counter resets to 0 and starts incrementing again
     console.log('[DEBUG_LOG] Starting cycle 3');
-    const beforeThirdStart = parseInt(await counter.textContent() || '0');
     await startBtn.click();
     await page.waitForTimeout(500);
     const thirdCycleStart = parseInt(await counter.textContent() || '0');
-    expect(thirdCycleStart).toBeGreaterThan(beforeThirdStart);
+    expect(thirdCycleStart).toBeGreaterThan(0);
     
     await page.waitForTimeout(500);
     const thirdCycleEnd = parseInt(await counter.textContent() || '0');

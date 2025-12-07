@@ -66,6 +66,10 @@ export class AppComponent implements OnInit, OnDestroy {
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     this.rpcClient.connect(wsUrl, true);
 
+    // Expose GreeterDefinition and component instance on window for E2E tests
+    (window as any).GreeterDefinition = GreeterDefinition;
+    (window as any).appComponent = this;
+
     // Monitor connection status with periodic checks
     this.statusCheckInterval = setInterval(() => {
       this.ngZone.run(() => {
@@ -132,6 +136,16 @@ export class AppComponent implements OnInit, OnDestroy {
 
   get isTickerActive(): boolean {
     return !!this.tickerSubscription;
+  }
+
+  // Expose client for E2E tests
+  get client(): NgGoRpcClient {
+    return this.rpcClient;
+  }
+
+  // Expose method to create transport for E2E tests
+  createTransport(): WebSocketRpcTransport {
+    return new WebSocketRpcTransport(this.rpcClient);
   }
 
   // Unary RPC method

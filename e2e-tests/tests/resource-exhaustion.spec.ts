@@ -38,9 +38,9 @@ test.describe('Resource Exhaustion Protection', () => {
     
     // Start 50 concurrent InfiniteTicker streams via browser code
     const result = await page.evaluate(async (count) => {
-      const client = (window as any).ng?.getComponent(document.querySelector('app-root'))?.client;
-      if (!client) {
-        return { success: false, error: 'Client not found' };
+      const component = (window as any).appComponent;
+      if (!component) {
+        return { success: false, error: 'Component not found' };
       }
       
       const streams: any[] = [];
@@ -49,13 +49,18 @@ test.describe('Resource Exhaustion Protection', () => {
       
       try {
         for (let i = 0; i < count; i++) {
-          const transport = client.createTransport();
+          const transport = component.createTransport();
           
-          // Start InfiniteTicker stream
-          const observable = transport.unary(
-            'greeter.Greeter',
-            'InfiniteTicker',
-            new Uint8Array(0) // Empty request
+          // Get GreeterDefinition from the window (exposed by the demo app)
+          const GreeterDefinition = (window as any).GreeterDefinition;
+          if (!GreeterDefinition) {
+            return { success: false, error: 'GreeterDefinition not found' };
+          }
+          
+          // Start InfiniteTicker stream using the new typed API
+          const observable = transport.request(
+            GreeterDefinition,
+            GreeterDefinition.methods.infiniteTicker
           );
           
           counters[i] = 0;
@@ -111,9 +116,14 @@ test.describe('Resource Exhaustion Protection', () => {
     const numStreams = 100;
     
     const result = await page.evaluate(async (count) => {
-      const client = (window as any).ng?.getComponent(document.querySelector('app-root'))?.client;
-      if (!client) {
-        return { success: false, error: 'Client not found' };
+      const component = (window as any).appComponent;
+      if (!component) {
+        return { success: false, error: 'Component not found' };
+      }
+      
+      const GreeterDefinition = (window as any).GreeterDefinition;
+      if (!GreeterDefinition) {
+        return { success: false, error: 'GreeterDefinition not found' };
       }
       
       const streams: any[] = [];
@@ -124,13 +134,12 @@ test.describe('Resource Exhaustion Protection', () => {
       try {
         for (let i = 0; i < count; i++) {
           try {
-            const transport = client.createTransport();
+            const transport = component.createTransport();
             
-            // Start InfiniteTicker stream
-            const observable = transport.unary(
-              'greeter.Greeter',
-              'InfiniteTicker',
-              new Uint8Array(0)
+            // Start InfiniteTicker stream using the new typed API
+            const observable = transport.request(
+              GreeterDefinition,
+              GreeterDefinition.methods.infiniteTicker
             );
             
             counters[i] = 0;
@@ -200,9 +209,14 @@ test.describe('Resource Exhaustion Protection', () => {
     const numStreams = 105;
     
     const result = await page.evaluate(async (count) => {
-      const client = (window as any).ng?.getComponent(document.querySelector('app-root'))?.client;
-      if (!client) {
-        return { success: false, error: 'Client not found' };
+      const component = (window as any).appComponent;
+      if (!component) {
+        return { success: false, error: 'Component not found' };
+      }
+      
+      const GreeterDefinition = (window as any).GreeterDefinition;
+      if (!GreeterDefinition) {
+        return { success: false, error: 'GreeterDefinition not found' };
       }
       
       const streams: any[] = [];
@@ -214,12 +228,11 @@ test.describe('Resource Exhaustion Protection', () => {
       try {
         for (let i = 0; i < count; i++) {
           try {
-            const transport = client.createTransport();
+            const transport = component.createTransport();
             
-            const observable = transport.unary(
-              'greeter.Greeter',
-              'InfiniteTicker',
-              new Uint8Array(0)
+            const observable = transport.request(
+              GreeterDefinition,
+              GreeterDefinition.methods.infiniteTicker
             );
             
             counters[i] = 0;
@@ -312,16 +325,22 @@ test.describe('Resource Exhaustion Protection', () => {
     
     // First, create many streams
     await page.evaluate(async () => {
-      const client = (window as any).ng?.getComponent(document.querySelector('app-root'))?.client;
-      if (!client) return;
+      const component = (window as any).appComponent;
+      if (!component) return;
+      
+      const GreeterDefinition = (window as any).GreeterDefinition;
+      if (!GreeterDefinition) return;
       
       const streams: any[] = [];
       
       // Create 50 streams
       for (let i = 0; i < 50; i++) {
         try {
-          const transport = client.createTransport();
-          const observable = transport.unary('greeter.Greeter', 'InfiniteTicker', new Uint8Array(0));
+          const transport = component.createTransport();
+          const observable = transport.request(
+            GreeterDefinition,
+            GreeterDefinition.methods.infiniteTicker
+          );
           const subscription = observable.subscribe({});
           streams.push(subscription);
         } catch (err) {
