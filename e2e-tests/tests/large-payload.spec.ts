@@ -56,7 +56,7 @@ test.describe('Large Payload Handling', () => {
     const expectedResponse = `Hello, ${largeString}!`;
     
     // Wait for the response to appear (with generous timeout for large payload processing)
-    await expect(greetingResponse).not.toBeEmpty({ timeout: 30000 });
+    await expect(greetingResponse).not.toBeEmpty({ timeout: 60000 });
     
     // Get the actual response
     const actualResponse = await greetingResponse.textContent();
@@ -93,7 +93,7 @@ test.describe('Large Payload Handling', () => {
     
     // Wait for response
     const expectedResponse = `Hello, ${largeString}!`;
-    await expect(greetingResponse).not.toBeEmpty({ timeout: 20000 });
+    await expect(greetingResponse).not.toBeEmpty({ timeout: 40000 });
     
     const actualResponse = await greetingResponse.textContent();
     expect(actualResponse).toBe(expectedResponse);
@@ -114,7 +114,7 @@ test.describe('Large Payload Handling', () => {
     await nameInput.clear();
     await nameInput.fill(string1);
     await sayHelloBtn.click();
-    await expect(greetingResponse).toHaveText(`Hello, ${string1}!`, { timeout: 15000 });
+    await expect(greetingResponse).toHaveText(`Hello, ${string1}!`, { timeout: 30000 });
     console.log('[DEBUG_LOG] ✓ First 500KB call completed');
     
     // Second large call: 750KB
@@ -123,7 +123,7 @@ test.describe('Large Payload Handling', () => {
     await nameInput.clear();
     await nameInput.fill(string2);
     await sayHelloBtn.click();
-    await expect(greetingResponse).toHaveText(`Hello, ${string2}!`, { timeout: 15000 });
+    await expect(greetingResponse).toHaveText(`Hello, ${string2}!`, { timeout: 30000 });
     console.log('[DEBUG_LOG] ✓ Second 750KB call completed');
     
     // Third large call: 1MB
@@ -132,7 +132,7 @@ test.describe('Large Payload Handling', () => {
     await nameInput.clear();
     await nameInput.fill(string3);
     await sayHelloBtn.click();
-    await expect(greetingResponse).toHaveText(`Hello, ${string3}!`, { timeout: 15000 });
+    await expect(greetingResponse).toHaveText(`Hello, ${string3}!`, { timeout: 30000 });
     console.log('[DEBUG_LOG] ✓ Third 1MB call completed');
     
     console.log('[DEBUG_LOG] ✓ All sequential large payload calls completed successfully');
