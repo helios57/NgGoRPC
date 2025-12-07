@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 
-	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
+	pb "github.com/nggorpc/wsgrpc/generated"
 )
 
 // TestIdleTimeout verifies that streams idle for longer than the configured timeout are forcibly closed

@@ -37,9 +37,11 @@ services:
         condition: service_started
       backend:
         condition: service_started
+    ipc: host
     volumes:
       - ./e2e-tests/tests:/app/tests
       - ./e2e-tests/playwright.config.ts:/app/playwright.config.ts
+      - ./e2e-tests/playwright-report:/app/playwright-report
       - /var/run/docker.sock:/var/run/docker.sock
 
 networks:

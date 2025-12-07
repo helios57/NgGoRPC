@@ -390,6 +390,10 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
 
+	// Set the read limit to the configured MaxPayloadSize
+	// Note: We add some buffer for frame overhead
+	conn.SetReadLimit(int64(s.options.MaxPayloadSize) + 1024)
+
 	// Start processing frames in a goroutine
 	if err := s.handleConnection(r.Context(), conn); err != nil {
 		log.Printf("[wsgrpc] Connection error: %v", err)
@@ -609,7 +613,15 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 		dec := func(m interface{}) error {
 			return stream.RecvMsg(m)
 		}
-		_, err = methodInfo.unaryHandler.Handler(methodInfo.srv, stream.ctx, dec, nil)
+		var resp interface{}
+		resp, err = methodInfo.unaryHandler.Handler(methodInfo.srv, stream.ctx, dec, nil)
+		if err == nil && resp != nil {
+			// Send the response for unary methods
+			if sendErr := stream.SendMsg(resp); sendErr != nil {
+				log.Printf("[wsgrpc] Failed to send unary response: %v", sendErr)
+				err = sendErr
+			}
+		}
 	} else if methodInfo.streamHandler != nil {
 		// Streaming method handler
 		err = methodInfo.streamHandler.Handler(methodInfo.srv, stream)

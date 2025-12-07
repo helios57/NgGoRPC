@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/helios57/NgGoRPC/wsgrpc"
-	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
+	"github.com/nggorpc/wsgrpc"
+	pb "github.com/nggorpc/wsgrpc/generated"
 	"google.golang.org/grpc/metadata"
 )
 

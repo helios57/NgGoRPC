@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 
-	pb "github.com/helios57/NgGoRPC/wsgrpc/generated"
+	pb "github.com/nggorpc/wsgrpc/generated"
 )
 
 // TestRaceCondition verifies that concurrent stream creation and deletion
