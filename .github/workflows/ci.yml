@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*.*.*', '*.*.*' ]
   pull_request:
     branches: [ main, develop ]
 
@@ -192,3 +193,36 @@ jobs:
     - name: Stop services
       if: always()
       run: docker compose down
+
+  publish-npm:
+    name: Publish to NPM
+    needs: [e2e-tests]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Download library artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: client-library
+        path: frontend/dist/client
+
+    - name: Update version and publish
+      working-directory: frontend/dist/client
+      run: |
+        TAG_VERSION=${GITHUB_REF#refs/tags/}
+        VERSION=${TAG_VERSION#v}
+        echo "Updating version to $VERSION"
+        npm pkg set version=$VERSION
+        npm publish --provenance --access public
