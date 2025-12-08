@@ -238,4 +238,37 @@ describe('WebSocketRpcTransport', () => {
       });
     });
   });
+
+  describe('optional data', () => {
+    it('should create empty message when data is undefined', (done) => {
+      const encodedRequest = new Uint8Array([0]); // Empty message
+      const encodedResponse = new Uint8Array([4, 5, 6]);
+      const decodedResponse: TestResponse = { message: 'Hello, World!' };
+
+      (mockRequestType.create as jasmine.Spy).and.returnValue({});
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({
+        finish: () => encodedRequest
+      });
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.request.and.returnValue(of(encodedResponse));
+
+      transport.request(
+        mockServiceDef,
+        mockServiceDef.methods['sayHello'],
+        undefined
+      ).subscribe({
+        next: (response) => {
+          expect(mockRequestType.create).toHaveBeenCalled();
+          expect(mockRequestType.encode).toHaveBeenCalledWith({});
+          expect(mockClient.request).toHaveBeenCalledWith(
+            'test.TestService',
+            'SayHello',
+            encodedRequest
+          );
+          expect(response).toEqual(decodedResponse);
+          done();
+        }
+      });
+    });
+  });
 });

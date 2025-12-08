@@ -444,4 +444,43 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
       expect((ssrClient as any).socket).toBeNull();
     });
   });
+
+  describe('Logging', () => {
+    it('should log messages and truncate long strings when logging is enabled', () => {
+      const consoleLogSpy = spyOn(console, 'log');
+      // Re-create client with logging enabled
+      const loggingClient = new NgGoRpcClient(new MockNgZone() as unknown as import('@angular/core').NgZone, { enableLogging: true });
+
+      // Mock socket for loggingClient
+      const mockSock = {
+        readyState: 1,
+        send: jasmine.createSpy('send'),
+        close: jasmine.createSpy('close'),
+        addEventListener: jasmine.createSpy('addEventListener'),
+        removeEventListener: jasmine.createSpy('removeEventListener'),
+        onopen: null as ((ev: Event) => void) | null,
+        onclose: null as ((ev: CloseEvent) => void) | null,
+        onerror: null as ((ev: Event) => void) | null,
+        onmessage: null as ((ev: MessageEvent) => void) | null,
+      };
+
+      // Override WebSocket on window
+      (window as unknown as { WebSocket: unknown }).WebSocket = jasmine.createSpy('WebSocket').and.returnValue(mockSock);
+      (window as unknown as { WebSocket: { OPEN: number } }).WebSocket.OPEN = 1;
+
+      loggingClient.connect('ws://localhost:8080');
+      mockSock.onopen!(new Event('open'));
+
+      const longMethodName = 'VeryLongMethodNameThatExceedsTwentyCharacters';
+      loggingClient.request('test.Service', longMethodName, new Uint8Array([1])).subscribe();
+
+      expect(consoleLogSpy).toHaveBeenCalled();
+      const calls = consoleLogSpy.calls.allArgs().flat();
+      // Check if any log contains truncated string
+      // The log format is: [NgGoRpcClient] Sending HEADERS for stream 1: /test.Service/VeryLongMethodName... (size: ...)
+      const expectedTruncated = '... (size:';
+      const found = calls.some((arg: unknown) => typeof arg === 'string' && arg.includes(expectedTruncated));
+      expect(found).toBe(true);
+    });
+  });
 });

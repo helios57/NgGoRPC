@@ -1790,6 +1790,50 @@ func TestUnaryInterceptorChaining(t *testing.T) {
 	t.Log("Unary interceptor chaining test completed")
 }
 
+func TestHandleWebSocketInvalidRequests(t *testing.T) {
+	server := NewServer(ServerOption{})
+
+	// Test case 1: Method not GET
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	w := httptest.NewRecorder()
+	server.HandleWebSocket(w, req)
+	// The websocket library might return 426 Upgrade Required or 405 Method Not Allowed
+	if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusUpgradeRequired {
+		t.Errorf("Expected StatusMethodNotAllowed or UpgradeRequired for POST request, got %d", w.Code)
+	}
+
+	// Test case 2: Missing Upgrade header
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	// Do not set Upgrade header
+	w = httptest.NewRecorder()
+	server.HandleWebSocket(w, req)
+	if w.Code == http.StatusSwitchingProtocols {
+		t.Errorf("Expected failure for request without Upgrade header, got SwitchingProtocols")
+	}
+}
+
+func TestListenAndServe(t *testing.T) {
+	server := NewServer(ServerOption{})
+
+	// Run ListenAndServe in a goroutine
+	errChan := make(chan error)
+	go func() {
+		// Use an invalid address to cause immediate failure, checking if it calls http.ListenAndServe
+		// or use a random port and close it?
+		// If we use invalid address, it returns error immediately.
+		errChan <- server.ListenAndServe("invalid-address")
+	}()
+
+	select {
+	case err := <-errChan:
+		if err == nil {
+			t.Error("Expected error from ListenAndServe with invalid address")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("ListenAndServe did not return error in time")
+	}
+}
+
 // TestStreamInterceptor verifies that stream interceptors are invoked
 func TestStreamInterceptor(t *testing.T) {
 	interceptorCalled := false
