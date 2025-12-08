@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
 jobs:
   go-build-test:
     name: Go - Build & Test
