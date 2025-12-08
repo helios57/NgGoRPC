@@ -34,7 +34,6 @@ test.describe('Resource Exhaustion Protection', () => {
     console.log('[DEBUG_LOG] Testing 50 concurrent streams');
     
     const numStreams = 50;
-    const streamCounters: any[] = [];
     
     // Start 50 concurrent InfiniteTicker streams via browser code
     const result = await page.evaluate(async (count) => {
@@ -66,7 +65,7 @@ test.describe('Resource Exhaustion Protection', () => {
           counters[i] = 0;
           
           const subscription = observable.subscribe({
-            next: (data: any) => {
+            next: () => {
               counters[i]++;
             },
             error: (err: any) => {
@@ -145,7 +144,7 @@ test.describe('Resource Exhaustion Protection', () => {
             counters[i] = 0;
             
             const subscription = observable.subscribe({
-              next: (data: any) => {
+              next: () => {
                 counters[i]++;
               },
               error: (err: any) => {
@@ -238,7 +237,7 @@ test.describe('Resource Exhaustion Protection', () => {
             counters[i] = 0;
             
             const subscription = observable.subscribe({
-              next: (data: any) => {
+              next: () => {
                 counters[i]++;
               },
               error: (err: any) => {
@@ -248,6 +247,7 @@ test.describe('Resource Exhaustion Protection', () => {
                 
                 // Check for resource exhaustion indicators
                 if (errMsg.includes('RESOURCE_EXHAUSTED') || 
+                    errMsg.includes('Resource exhausted') ||
                     errMsg.includes('too many') || 
                     errMsg.includes('limit')) {
                   resourceExhaustedErrors++;
@@ -263,6 +263,7 @@ test.describe('Resource Exhaustion Protection', () => {
             errorMessages.push(`Stream ${i} creation: ${errMsg}`);
             
             if (errMsg.includes('RESOURCE_EXHAUSTED') || 
+                errMsg.includes('Resource exhausted') ||
                 errMsg.includes('too many') || 
                 errMsg.includes('limit')) {
               resourceExhaustedErrors++;
@@ -304,9 +305,9 @@ test.describe('Resource Exhaustion Protection', () => {
     
     expect(result.success).toBe(true);
     
-    // We expect some errors when exceeding limits
-    // At least 60% should work, and we should see some errors
-    expect(result.activeStreams).toBeGreaterThan(60);
+    // We expect exactly 100 active streams (limit) and 5 resource exhausted errors
+    expect(result.activeStreams).toBe(100);
+    expect(result.resourceExhaustedErrors).toBe(5);
     
     console.log(`[DEBUG_LOG] ✓ Handled ${result.activeStreams}/${numStreams} streams`);
     console.log(`[DEBUG_LOG] Total errors: ${result.errors}, Resource exhausted errors: ${result.resourceExhaustedErrors}`);

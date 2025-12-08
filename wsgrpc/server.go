@@ -2,6 +2,7 @@ package wsgrpc
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -28,8 +29,13 @@ type methodInfo struct {
 type ServerOption struct {
 	// InsecureSkipVerify disables origin checking (development only)
 	InsecureSkipVerify bool
+	// AllowedOrigins sets the allowed origin patterns (e.g. ["http://localhost:4200"])
+	// If nil or empty, and InsecureSkipVerify is false, standard same-origin policy applies.
+	AllowedOrigins []string
 	// MaxPayloadSize sets the maximum frame payload size (default 4MB)
 	MaxPayloadSize uint32
+	// MaxConcurrentStreams sets the maximum number of concurrent streams per connection (default 100)
+	MaxConcurrentStreams uint32
 	// IdleTimeout sets the duration after which idle streams are closed (default 5 minutes)
 	IdleTimeout time.Duration
 	// IdleCheckInterval sets how often to check for idle streams (default 1 minute)
@@ -368,13 +374,14 @@ func (c *wsConnection) Close() {
 func NewServer(opts ...ServerOption) *Server {
 	// Default options
 	merged := ServerOption{
-		InsecureSkipVerify: false,           // Secure by default
-		MaxPayloadSize:     4 * 1024 * 1024, // 4MB default
-		IdleTimeout:        5 * time.Minute, // 5 minute default idle timeout
-		IdleCheckInterval:  1 * time.Minute, // 1 minute default check interval
-		KeepAliveInterval:  30 * time.Second,
-		KeepAliveTimeout:   10 * time.Second,
-		EnableLogging:      false, // Logging disabled by default
+		InsecureSkipVerify:   false,           // Secure by default
+		MaxPayloadSize:       4 * 1024 * 1024, // 4MB default
+		MaxConcurrentStreams: 100,             // 100 streams default
+		IdleTimeout:          5 * time.Minute, // 5 minute default idle timeout
+		IdleCheckInterval:    1 * time.Minute, // 1 minute default check interval
+		KeepAliveInterval:    30 * time.Second,
+		KeepAliveTimeout:     10 * time.Second,
+		EnableLogging:        false, // Logging disabled by default
 	}
 
 	// Merge provided options
@@ -382,8 +389,14 @@ func NewServer(opts ...ServerOption) *Server {
 		if o.InsecureSkipVerify {
 			merged.InsecureSkipVerify = true
 		}
+		if len(o.AllowedOrigins) > 0 {
+			merged.AllowedOrigins = o.AllowedOrigins
+		}
 		if o.MaxPayloadSize != 0 {
 			merged.MaxPayloadSize = o.MaxPayloadSize
+		}
+		if o.MaxConcurrentStreams != 0 {
+			merged.MaxConcurrentStreams = o.MaxConcurrentStreams
 		}
 		if o.IdleTimeout != 0 {
 			merged.IdleTimeout = o.IdleTimeout
@@ -464,6 +477,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Accept the WebSocket connection
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: s.options.InsecureSkipVerify,
+		OriginPatterns:     s.options.AllowedOrigins,
 	})
 	if err != nil {
 		if s.options.EnableLogging {
@@ -650,6 +664,23 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 		// Process frame based on type
 		if frame.Flags&FlagHEADERS != 0 {
+			// Check concurrent streams limit
+			wsConn.mu.Lock()
+			streamCount := len(wsConn.streamMap)
+			wsConn.mu.Unlock()
+
+			if uint32(streamCount) >= s.options.MaxConcurrentStreams {
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Max concurrent streams exceeded (%d). Rejecting stream %d", s.options.MaxConcurrentStreams, frame.StreamID)
+				}
+				// Send RST_STREAM with RESOURCE_EXHAUSTED (8)
+				rstPayload := make([]byte, 4)
+				binary.BigEndian.PutUint32(rstPayload, 8)
+				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, rstPayload)
+				_ = wsConn.send(rstFrame)
+				continue
+			}
+
 			// New stream - parse headers (method path and metadata)
 			headersText := string(frame.Payload)
 
@@ -693,8 +724,10 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				if s.options.EnableLogging {
 					log.Printf("[wsgrpc] Method not found: %s", truncateForLog(methodPath))
 				}
-				// Send RST_STREAM
-				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, []byte("method not found"))
+				// Send RST_STREAM with REFUSED_STREAM (6)
+				rstPayload := make([]byte, 4)
+				binary.BigEndian.PutUint32(rstPayload, 6)
+				rstFrame := encodeFrame(frame.StreamID, FlagRST_STREAM, rstPayload)
 				if err := wsConn.send(rstFrame); err != nil {
 					if s.options.EnableLogging {
 						log.Printf("[wsgrpc] Failed to send RST_STREAM: %v", err)

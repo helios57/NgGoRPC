@@ -51,7 +51,7 @@ func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb
 }
 
 // InfiniteTicker implements the InfiniteTicker RPC method
-func (s *greeterServer) InfiniteTicker(req *pb.Empty, stream pb.Greeter_InfiniteTickerServer) error {
+func (s *greeterServer) InfiniteTicker(_ *pb.Empty, stream pb.Greeter_InfiniteTickerServer) error {
 	log.Printf("[Greeter] InfiniteTicker started")
 
 	var count int64 = 0
@@ -89,11 +89,11 @@ func truncateForLog(s string) string {
 func main() {
 	// Create wsgrpc server with options
 	server := wsgrpc.NewServer(wsgrpc.ServerOption{
-		InsecureSkipVerify: true,            // Allow connections from any origin (for development)
-		MaxPayloadSize:     4 * 1024 * 1024, // 4MB
-		IdleTimeout:        5 * time.Minute, // 5 minute idle timeout
-		IdleCheckInterval:  1 * time.Minute, // 1 minute check interval
-		EnableLogging:      true,            // Enable debug logging for demo
+		AllowedOrigins:    []string{"http://localhost:4200", "http://localhost:8352"}, // Allow dev and e2e origins
+		MaxPayloadSize:    4 * 1024 * 1024,                                            // 4MB
+		IdleTimeout:       5 * time.Minute,                                            // 5 minute idle timeout
+		IdleCheckInterval: 1 * time.Minute,                                            // 1 minute check interval
+		EnableLogging:     true,                                                       // Enable debug logging for demo
 	})
 
 	// Register the Greeter service

@@ -172,7 +172,60 @@ export class NgGoRpcClient {
                             }
 
                             if (frame.flags & FrameFlags.RST_STREAM) {
-                                subject.error(new GrpcError(GrpcStatus.CANCELLED, 'Stream reset by server'));
+                                let status = GrpcStatus.CANCELLED;
+                                let message = 'Stream reset by server';
+
+                                if (frame.payload.length >= 4) {
+                                    const view = new DataView(frame.payload.buffer, frame.payload.byteOffset, frame.payload.byteLength);
+                                    const code = view.getUint32(0, false); // Big Endian
+
+                                    switch (code) {
+                                        case 0: // NO_ERROR
+                                            subject.complete();
+                                            this.streamMap.delete(frame.streamId);
+                                            return;
+                                        case 1: // PROTOCOL_ERROR
+                                            status = GrpcStatus.INTERNAL;
+                                            message = 'Protocol error';
+                                            break;
+                                        case 2: // INTERNAL_ERROR
+                                            status = GrpcStatus.INTERNAL;
+                                            message = 'Internal server error';
+                                            break;
+                                        case 3: // FLOW_CONTROL_ERROR
+                                            status = GrpcStatus.INTERNAL;
+                                            message = 'Flow control error';
+                                            break;
+                                        case 4: // STREAM_CLOSED
+                                            status = GrpcStatus.INTERNAL;
+                                            message = 'Stream closed';
+                                            break;
+                                        case 5: // FRAME_SIZE_ERROR
+                                            status = GrpcStatus.RESOURCE_EXHAUSTED;
+                                            message = 'Frame size error';
+                                            break;
+                                        case 6: // REFUSED_STREAM
+                                            status = GrpcStatus.UNAVAILABLE;
+                                            message = 'Stream refused';
+                                            break;
+                                        case 7: // CANCEL
+                                            status = GrpcStatus.CANCELLED;
+                                            message = 'Stream cancelled';
+                                            break;
+                                        case 8: // RESOURCE_EXHAUSTED
+                                            status = GrpcStatus.RESOURCE_EXHAUSTED;
+                                            message = 'Resource exhausted';
+                                            break;
+                                        case 9: // UNAVAILABLE
+                                            status = GrpcStatus.UNAVAILABLE;
+                                            message = 'Service unavailable';
+                                            break;
+                                        default:
+                                            message = `Stream reset with code ${code}`;
+                                    }
+                                }
+
+                                subject.error(new GrpcError(status, message));
                                 this.streamMap.delete(frame.streamId);
                             }
                         });
