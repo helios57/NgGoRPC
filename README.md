@@ -75,8 +75,10 @@ npm install
 To use NgGoRPC in your Angular application, install the client library from npm:
 
 ```bash
-npm install @nggorpc/client
+npm i nggorpc --save
 ```
+
+The package is published at: https://www.npmjs.com/package/nggorpc
 
 Or install from a local build artifact:
 
