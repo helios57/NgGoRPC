@@ -1,7 +1,7 @@
 /**
  * Unit tests for NgGoRpcClient (client.ts)
  */
-import { TestBed } from '@angular/core/testing';
+
 import { NgGoRpcClient } from './client';
 import { FrameFlags, decodeFrame, encodeFrame } from './frame';
 
