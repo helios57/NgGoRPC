@@ -53,7 +53,7 @@ export class NgGoRpcClient {
     private readonly _connectionState$ = new BehaviorSubject<ConnectionState>(ConnectionState.Disconnected);
     readonly connectionState$ = this._connectionState$.asObservable();
 
-    constructor(private ngZone: NgZone, config?: NgGoRpcConfig) {
+    constructor(private ngZone?: NgZone, config?: NgGoRpcConfig) {
         // Apply configuration with defaults
         this.pingInterval = config?.pingInterval ?? 30000;
         this.baseReconnectDelay = config?.baseReconnectDelay ?? 1000;
@@ -93,8 +93,9 @@ export class NgGoRpcClient {
             return;
         }
 
-        // Run WebSocket operations outside Angular zone for better performance
-        this.ngZone.runOutsideAngular(() => {
+        // Run WebSocket operations outside Angular zone for better performance if NgZone exists
+        const runOutside = (fn: () => void) => this.ngZone ? this.ngZone.runOutsideAngular(fn) : fn();
+        runOutside(() => {
             this.socket = new WebSocket(this.currentUrl!);
 
             // Set binary type to arraybuffer for efficient binary frame processing
@@ -146,7 +147,8 @@ export class NgGoRpcClient {
                     const subject = this.streamMap.get(frame.streamId);
                     if (subject) {
                         // Re-enter Angular zone only when delivering data to components
-                        this.ngZone.run(() => {
+                        const runInside = (fn: () => void) => this.ngZone ? this.ngZone.run(fn) : fn();
+                        runInside(() => {
                             if (frame.flags & FrameFlags.DATA) {
                                 subject.next(frame.payload);
                             }
@@ -270,7 +272,8 @@ export class NgGoRpcClient {
      * Errors out all active streams when disconnection occurs
      */
     private errorOutActiveStreams(): void {
-        this.ngZone.run(() => {
+        const runInside = (fn: () => void) => this.ngZone ? this.ngZone.run(fn) : fn();
+        runInside(() => {
             this.streamMap.forEach((subject) => {
                 subject.error(new GrpcError(GrpcStatus.UNAVAILABLE, 'Connection lost'));
             });
@@ -309,7 +312,8 @@ export class NgGoRpcClient {
      */
     private startPingInterval(): void {
         // Run outside Angular zone to avoid triggering change detection
-        this.ngZone.runOutsideAngular(() => {
+        const runOutside = (fn: () => void) => this.ngZone ? this.ngZone.runOutsideAngular(fn) : fn();
+        runOutside(() => {
             this.pingIntervalId = setInterval(() => {
                 this.sendPing();
             }, this.pingInterval);

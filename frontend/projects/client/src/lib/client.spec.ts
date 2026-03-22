@@ -1,7 +1,7 @@
 /**
  * Unit tests for NgGoRpcClient (client.ts)
  */
-import { fakeAsync, tick } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { NgGoRpcClient } from './client';
 import { FrameFlags, decodeFrame, encodeFrame } from './frame';
 
@@ -23,6 +23,7 @@ describe('NgGoRpcClient', () => {
   let sentMessages: Uint8Array[];
 
   beforeEach(() => {
+    jasmine.clock().install();
     sentMessages = [];
 
     // Create a mock WebSocket
@@ -47,6 +48,7 @@ describe('NgGoRpcClient', () => {
   });
 
   afterEach(() => {
+    jasmine.clock().uninstall();
     if (client) {
       client.disconnect();
     }
@@ -60,15 +62,15 @@ describe('NgGoRpcClient', () => {
       expect((window as any).WebSocket).not.toHaveBeenCalled();
     });
 
-    it('should not reconnect if reconnection is disabled', fakeAsync(() => {
+    it('should not reconnect if reconnection is disabled', () => {
       client.connect('ws://localhost:8080', false);
       mockSocket.onopen(new Event('open')); // Simulate connection
       mockSocket.onclose(new CloseEvent('close'));
-      tick(5000);
+      jasmine.clock().tick(5000);
       // The initial call is expected, but no subsequent calls for reconnection
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((window as any).WebSocket).toHaveBeenCalledTimes(1);
-    }));
+    });
   });
 
   describe('ConnectionState Observable', () => {
@@ -94,7 +96,7 @@ describe('NgGoRpcClient', () => {
       mockSocket.onopen(new Event('open'));
     });
 
-    it('should emit Reconnecting then Disconnected when reconnection enabled and connection closes', fakeAsync(() => {
+    it('should emit Reconnecting then Disconnected when reconnection enabled and connection closes', () => {
       const states: string[] = [];
       client.connectionState$.subscribe(state => {
         states.push(state);
@@ -102,16 +104,16 @@ describe('NgGoRpcClient', () => {
 
       client.connect('ws://localhost:8080', true);
       mockSocket.onopen(new Event('open'));
-      tick();
+      jasmine.clock().tick(0);
       mockSocket.onclose(new CloseEvent('close'));
-      tick();
+      jasmine.clock().tick(0);
 
       expect(states).toContain('Disconnected');
       expect(states).toContain('Connected');
       expect(states).toContain('Reconnecting');
-    }));
+    });
 
-    it('should emit Disconnected without Reconnecting when reconnection disabled', fakeAsync(() => {
+    it('should emit Disconnected without Reconnecting when reconnection disabled', () => {
       const states: string[] = [];
       client.connectionState$.subscribe(state => {
         states.push(state);
@@ -119,18 +121,18 @@ describe('NgGoRpcClient', () => {
 
       client.connect('ws://localhost:8080', false);
       mockSocket.onopen(new Event('open'));
-      tick();
+      jasmine.clock().tick(0);
       mockSocket.onclose(new CloseEvent('close'));
-      tick();
+      jasmine.clock().tick(0);
 
       expect(states).toContain('Disconnected');
       expect(states).toContain('Connected');
       expect(states).not.toContain('Reconnecting');
-    }));
+    });
   });
 
   describe('Auto-Reconnection', () => {
-    it('should attempt reconnection with exponential backoff', fakeAsync(() => {
+    it('should attempt reconnection with exponential backoff', () => {
       const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
       const testClient = new NgGoRpcClient(mockNgZone, {
         baseReconnectDelay: 1000,
@@ -142,10 +144,10 @@ describe('NgGoRpcClient', () => {
       mockSocket.onclose(new CloseEvent('close'));
 
       // First reconnection after 1s (2^0 * 1000ms)
-      tick(999);
+      jasmine.clock().tick(999);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((window as any).WebSocket).toHaveBeenCalledTimes(1);
-      tick(1);
+      jasmine.clock().tick(1);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
 
@@ -153,17 +155,17 @@ describe('NgGoRpcClient', () => {
       mockSocket.onclose(new CloseEvent('close'));
 
       // Second reconnection after 2s (2^1 * 1000ms)
-      tick(1999);
+      jasmine.clock().tick(1999);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
-      tick(1);
+      jasmine.clock().tick(1);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((window as any).WebSocket).toHaveBeenCalledTimes(3);
 
       testClient.disconnect();
-    }));
+    });
 
-    it('should cap reconnection delay at maxReconnectDelay', fakeAsync(() => {
+    it('should cap reconnection delay at maxReconnectDelay', () => {
       const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
       const testClient = new NgGoRpcClient(mockNgZone, {
         baseReconnectDelay: 1000,
@@ -176,7 +178,7 @@ describe('NgGoRpcClient', () => {
       // Trigger multiple failures to reach cap
       for (let i = 0; i < 5; i++) {
         mockSocket.onclose(new CloseEvent('close'));
-        tick(3000); // Wait max delay
+        jasmine.clock().tick(3000); // Wait max delay
       }
 
       // After 5 attempts, delay should be capped at 3000ms
@@ -185,9 +187,9 @@ describe('NgGoRpcClient', () => {
       expect(callCount).toBeGreaterThan(1);
 
       testClient.disconnect();
-    }));
+    });
 
-    it('should reset reconnection attempt counter on successful connection', fakeAsync(() => {
+    it('should reset reconnection attempt counter on successful connection', () => {
       const mockNgZone = new MockNgZone() as unknown as import('@angular/core').NgZone;
       const testClient = new NgGoRpcClient(mockNgZone, {
         baseReconnectDelay: 1000
@@ -199,7 +201,7 @@ describe('NgGoRpcClient', () => {
       expect((testClient as any).reconnectAttempt).toBe(0);
 
       mockSocket.onclose(new CloseEvent('close'));
-      tick(1000);
+      jasmine.clock().tick(1000);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((testClient as any).reconnectAttempt).toBe(1);
 
@@ -208,9 +210,9 @@ describe('NgGoRpcClient', () => {
       expect((testClient as any).reconnectAttempt).toBe(0);
 
       testClient.disconnect();
-    }));
+    });
 
-    it('should error out active streams with UNAVAILABLE when disconnected', fakeAsync(() => {
+    it('should error out active streams with UNAVAILABLE when disconnected', () => {
       client.connect('ws://localhost:8080', true);
       mockSocket.onopen(new Event('open'));
 
@@ -223,7 +225,7 @@ describe('NgGoRpcClient', () => {
       });
 
       mockSocket.onclose(new CloseEvent('close'));
-      tick();
+      jasmine.clock().tick(0);
 
       expect(errorReceived).toBeDefined();
       // Check if it's a GrpcError with UNAVAILABLE status
@@ -231,7 +233,7 @@ describe('NgGoRpcClient', () => {
         code: 14, // GrpcStatus.UNAVAILABLE
         message: 'Connection lost'
       }));
-    }));
+    });
   });
 
   describe('Message Handling', () => {
@@ -320,17 +322,17 @@ describe('NgGoRpcClient', () => {
   });
 
   describe('PONG Watchdog', () => {
-    it('should close socket when PONG timeout occurs', fakeAsync(() => {
+    it('should close socket when PONG timeout occurs', () => {
       client.connect('ws://localhost:8080');
       mockSocket.onopen(new Event('open'));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (client as any).sendPing();
       expect(mockSocket.close).not.toHaveBeenCalled();
-      tick(5000);
+      jasmine.clock().tick(5000);
       expect(mockSocket.close).toHaveBeenCalledWith(4000, 'PONG timeout');
-    }));
+    });
 
-    it('should cancel watchdog timeout when PONG is received', fakeAsync(() => {
+    it('should cancel watchdog timeout when PONG is received', () => {
       client.connect('ws://localhost:8080');
       mockSocket.onopen(new Event('open'));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -341,9 +343,9 @@ describe('NgGoRpcClient', () => {
       const pongFrame = encodeFrame(0, FrameFlags.PONG, new Uint8Array(0));
       mockSocket.onmessage(new MessageEvent('message', { data: pongFrame.buffer }));
 
-      tick(5000);
+      jasmine.clock().tick(5000);
       expect(mockSocket.close).not.toHaveBeenCalled();
-    }));
+    });
   });
 
   describe('Teardown Trigger', () => {

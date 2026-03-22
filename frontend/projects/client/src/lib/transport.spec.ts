@@ -1,5 +1,5 @@
 import { of } from 'rxjs';
-import { fakeAsync, tick, TestBed } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { WebSocketRpcTransport, ServiceDefinition, MethodDescriptor } from './transport';
 import { NgGoRpcClient } from './client';
 
@@ -118,7 +118,7 @@ describe('WebSocketRpcTransport', () => {
   });
 
   describe('requestSignal', () => {
-    it('should return a signal with the decoded response', fakeAsync(() => {
+    it('should return a signal with the decoded response', (done) => {
       const requestData: TestRequest = { name: 'World' };
       const encodedRequest = new Uint8Array([1, 2, 3]);
       const encodedResponse = new Uint8Array([4, 5, 6]);
@@ -138,10 +138,13 @@ describe('WebSocketRpcTransport', () => {
         );
 
         expect(signal).toBeDefined();
-        tick();
-        expect(signal()).toEqual(decodedResponse);
+        // of() emits synchronously, so signal should have value immediately
+        setTimeout(() => {
+          expect(signal()).toEqual(decodedResponse);
+          done();
+        }, 0);
       });
-    }));
+    });
   });
 
   describe('metadata support', () => {

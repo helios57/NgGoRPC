@@ -1,4 +1,4 @@
-import { Component, NgZone, OnDestroy, OnInit, signal, effect, inject } from '@angular/core';
+import { Component, NgZone, OnDestroy, OnInit, signal, effect, inject, ChangeDetectionStrategy, model } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
@@ -10,7 +10,8 @@ import { Subscription } from 'rxjs';
   imports: [CommonModule, FormsModule],
   templateUrl: './app.component.html',
   standalone: true,
-  styleUrl: './app.component.css'
+  styleUrl: './app.component.css',
+  changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AppComponent implements OnInit, OnDestroy {
   title = 'NgGoRPC Infinite Ticker Demo';
@@ -21,7 +22,7 @@ export class AppComponent implements OnInit, OnDestroy {
   lastTimestamp = signal<string>('-');
 
   // Unary RPC properties
-  greetingName: string = 'World';
+  greetingName = model<string>('World');
   greetingResponse = signal<string>('');
   greetingError = signal<string>('');
 
@@ -32,7 +33,7 @@ export class AppComponent implements OnInit, OnDestroy {
   stream2Active = signal<boolean>(false);
 
   // requestSignal examples properties
-  signalGreetingName: string = 'Signal World';
+  signalGreetingName = model<string>('Signal World');
   signalGreetingResponse = signal<HelloResponse | undefined>(undefined);
 
   signalStreamTick = signal<Tick | undefined>(undefined);
@@ -158,7 +159,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.transport.request(
       GreeterDefinition,
       GreeterDefinition.methods.sayHello,
-      { name: this.greetingName }
+      { name: this.greetingName() }
     ).subscribe({
       next: (response: HelloResponse) => {
         this.greetingResponse.set(response.message);
@@ -255,7 +256,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const responseSignal = this.transport.requestSignal(
       GreeterDefinition,
       GreeterDefinition.methods.sayHello,
-      { name: this.signalGreetingName }
+      { name: this.signalGreetingName() }
     );
 
     // Update our component signal with the response
