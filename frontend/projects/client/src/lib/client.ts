@@ -411,10 +411,78 @@ export class NgGoRpcClient {
     /**
      * Sets the authentication token to be included in RPC headers.
      *
-     * @param token - The authentication token (e.g., JWT bearer token)
+     * When called with `options.reconnect: true`, this will gracefully close the
+     * current WebSocket connection and immediately reconnect, ensuring subsequent
+     * requests use the new token. This is useful for token refresh flows (e.g.,
+     * Auth0 token rotation) where the server validates the token per-connection.
+     *
+     * @param token - The authentication token (e.g., JWT bearer token), or null to clear
+     * @param options - Optional settings. `reconnect: true` triggers a graceful reconnect.
      */
-    setAuthToken(token: string | null): void {
+    setAuthToken(token: string | null, options?: { reconnect?: boolean }): void {
+        const tokenChanged = this.authToken !== token;
         this.authToken = token;
+
+        if (options?.reconnect && tokenChanged && this.connected) {
+            this.reconnect();
+        }
+    }
+
+    /**
+     * Gracefully closes the current WebSocket connection and immediately reconnects.
+     *
+     * Unlike `disconnect()`, this preserves the reconnection-enabled state and the
+     * current URL. Active streams will receive an UNAVAILABLE error and must be retried
+     * by the caller. The reconnection bypasses the exponential backoff since it is
+     * an intentional reconnect, not a failure.
+     *
+     * Common use cases:
+     * - Token refresh: call `setAuthToken(newToken, { reconnect: true })` instead
+     * - Force re-authentication after permissions change
+     * - Reset stream state after a known server-side deployment
+     */
+    reconnect(): void {
+        if (!this.currentUrl) {
+            return;
+        }
+
+        if (this.enableLogging) {
+            console.log('[NgGoRpcClient] Initiating graceful reconnect...');
+        }
+
+        // Stop keep-alive
+        this.stopPingInterval();
+
+        // Clear any pending scheduled reconnection
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+        }
+
+        // Close the existing socket without disabling reconnection
+        if (this.socket) {
+            // Temporarily disable the onclose handler's reconnection scheduling
+            // because we'll connect immediately ourselves
+            const wasReconnectionEnabled = this.reconnectionEnabled;
+            this.reconnectionEnabled = false;
+
+            this.socket.close(1000, 'Reconnecting with new credentials');
+            this.socket = null;
+            this.connected = false;
+
+            // Error out active streams so callers know to retry
+            this.errorOutActiveStreams();
+            this._connectionState$.next(ConnectionState.Reconnecting);
+
+            // Restore reconnection flag
+            this.reconnectionEnabled = wasReconnectionEnabled;
+        }
+
+        // Reset reconnect counter (this is intentional, not a failure)
+        this.reconnectAttempt = 0;
+
+        // Immediately attempt a new connection
+        this.attemptConnection();
     }
 
     /**

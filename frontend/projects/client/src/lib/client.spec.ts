@@ -485,4 +485,144 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
       expect(found).toBe(true);
     });
   });
+
+  describe('Reconnect', () => {
+    it('should gracefully reconnect when reconnect() is called', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+      expect(client.isConnected()).toBe(true);
+
+      client.reconnect();
+
+      // Should have closed the old socket cleanly
+      expect(mockSocket.close).toHaveBeenCalledWith(1000, 'Reconnecting with new credentials');
+
+      // Should have attempted a new connection
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
+    });
+
+    it('should reset reconnect attempt counter on reconnect()', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      // Simulate a few failures to bump the counter
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).reconnectAttempt = 5;
+
+      client.reconnect();
+
+      // Should be reset to 0 (intentional reconnect, not failure)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((client as any).reconnectAttempt).toBe(0);
+    });
+
+    it('should emit Reconnecting state during reconnect', () => {
+      const states: string[] = [];
+      client.connectionState$.subscribe(state => {
+        states.push(state);
+      });
+
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+      states.length = 0; // Reset to only capture reconnect states
+
+      client.reconnect();
+
+      expect(states).toContain('Reconnecting');
+    });
+
+    it('should error out active streams on reconnect()', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      let errorReceived: unknown = null;
+      const obs = client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]));
+      obs.subscribe({
+        error: (err) => {
+          errorReceived = err;
+        }
+      });
+
+      client.reconnect();
+
+      expect(errorReceived).toBeDefined();
+      expect(errorReceived).toEqual(jasmine.objectContaining({
+        code: 14, // GrpcStatus.UNAVAILABLE
+        message: 'Connection lost'
+      }));
+    });
+
+    it('should be a no-op when not connected (no URL)', () => {
+      // Client has no URL set, reconnect should not throw
+      client.reconnect();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).not.toHaveBeenCalled();
+    });
+
+    it('should preserve reconnection-enabled flag after reconnect', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      client.reconnect();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((client as any).reconnectionEnabled).toBe(true);
+    });
+  });
+
+  describe('setAuthToken with reconnect option', () => {
+    it('should trigger reconnect when token changes and reconnect is true', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      client.setAuthToken('old-token');
+      client.setAuthToken('new-token', { reconnect: true });
+
+      // Should have closed and reconnected
+      expect(mockSocket.close).toHaveBeenCalledWith(1000, 'Reconnecting with new credentials');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(2);
+    });
+
+    it('should NOT reconnect when token is the same even with reconnect: true', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      client.setAuthToken('same-token');
+      client.setAuthToken('same-token', { reconnect: true });
+
+      // Should NOT have closed or reconnected
+      expect(mockSocket.close).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT reconnect when reconnect option is false', () => {
+      client.connect('ws://localhost:8080', true);
+      mockSocket.onopen(new Event('open'));
+
+      client.setAuthToken('old-token');
+      client.setAuthToken('new-token', { reconnect: false });
+
+      // Should NOT have closed or reconnected
+      expect(mockSocket.close).not.toHaveBeenCalled();
+    });
+
+    it('should NOT reconnect when not connected', () => {
+      // Not connecting first
+      client.setAuthToken('token1');
+      client.setAuthToken('token2', { reconnect: true });
+
+      // No reconnect because not connected
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((window as any).WebSocket).not.toHaveBeenCalled();
+    });
+
+    it('should still update the token even without reconnect', () => {
+      client.setAuthToken('new-token');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((client as any).authToken).toBe('new-token');
+    });
+  });
 });
