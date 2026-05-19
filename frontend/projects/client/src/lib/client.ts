@@ -462,9 +462,13 @@ export class NgGoRpcClient {
         // Close the existing socket without disabling reconnection
         if (this.socket) {
             // Temporarily disable the onclose handler's reconnection scheduling
-            // because we'll connect immediately ourselves
+            // because we'll connect immediately ourselves.
+            // Null out the onclose handler BEFORE close() so the browser's async
+            // close event cannot fire after we restore reconnectionEnabled and
+            // trigger a spurious second reconnect attempt (v1.1.1 race fix).
             const wasReconnectionEnabled = this.reconnectionEnabled;
             this.reconnectionEnabled = false;
+            this.socket.onclose = null;
 
             this.socket.close(1000, 'Reconnecting with new credentials');
             this.socket = null;
