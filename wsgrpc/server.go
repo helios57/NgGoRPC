@@ -7,16 +7,29 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+// genericCloseReason is the browser-facing WebSocket close reason used whenever the
+// connection is terminated due to an internal/server error. The internal error detail
+// is logged server-side instead of being leaked to the client over the wire.
+// (Security: WebSocket close reasons are visible to the browser.)
+const genericCloseReason = "internal error"
+
+// genericInternalMessage is the browser-facing gRPC trailer message used for scrubbed
+// internal errors (recovered panics, post-handler marshal failures, and other paths
+// where the raw error string would otherwise leak internal detail to the client).
+const genericInternalMessage = "internal error"
 
 // methodInfo stores the handler and service implementation for a method
 type methodInfo struct {
@@ -61,6 +74,11 @@ type Server struct {
 	options     ServerOption
 	connections map[*wsConnection]struct{} // Track active connections for graceful shutdown
 	shutdown    bool                       // Flag to indicate server is shutting down
+
+	// testConnErrHook, when non-nil, forces handleConnection to return the given error
+	// immediately after connection setup. Used only by tests to exercise the
+	// connection-error close path deterministically. Never set in production.
+	testConnErrHook func() error
 }
 
 // wsConnection manages a single WebSocket connection and its streams
@@ -502,10 +520,10 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Start processing frames in a goroutine
 	if err := s.handleConnection(r.Context(), conn); err != nil {
-		if s.options.EnableLogging {
-			log.Printf("[wsgrpc] Connection error: %v", err)
-		}
-		_ = conn.Close(websocket.StatusInternalError, err.Error())
+		// Log the full internal detail server-side; never put err.Error() in the
+		// browser-facing close reason (that leaks internal error strings over the wire).
+		log.Printf("[wsgrpc] Connection error (closing with generic reason): %v", err)
+		_ = conn.Close(websocket.StatusInternalError, genericCloseReason)
 		return
 	}
 
@@ -556,6 +574,11 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 	// Start the idle timeout monitor goroutine
 	go wsConn.idleTimeoutMonitor()
+
+	// Test-only seam: deterministically exercise the connection-error close path.
+	if s.testConnErrHook != nil {
+		return s.testConnErrHook()
+	}
 
 	// Start server-initiated keepalive if enabled
 	if s.options.KeepAliveInterval > 0 {
@@ -812,6 +835,113 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodInfo) {
 	var err error
 
+	// Recover from any panic in the handler / interceptor chain so a single buggy
+	// handler cannot crash the whole connection (or the process) and cannot leak the
+	// panic detail to the browser. The panic detail + stack are logged server-side;
+	// the client receives a clean, scrubbed Internal status (built below from err).
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[wsgrpc] PANIC recovered in handler for stream %d: %v\n%s",
+					stream.streamID, r, debug.Stack())
+				// status.Error keeps a real gRPC code; the message is generic so no
+				// internal detail reaches the client. The status-extraction below will
+				// read codes.Internal from this and use the generic message.
+				err = status.Error(codes.Internal, genericInternalMessage)
+			}
+		}()
+		err = s.invokeHandler(stream, methodInfo)
+	}()
+
+	// Default status OK
+	statusCode := 0
+	statusMsg := "OK"
+
+	if err != nil {
+		// Always log the full internal error detail server-side (operators need it),
+		// regardless of EnableLogging — but never put raw internal detail on the wire.
+		log.Printf("[wsgrpc] Handler error for stream %d: %v", stream.streamID, err)
+
+		// Extract the gRPC status. The CODE is always preserved and forwarded to the
+		// client. The human-facing MESSAGE is scrubbed for any error that does NOT
+		// already carry an explicit gRPC status (e.g. a raw marshal/transport error or
+		// a panic sentinel), so internal strings cannot leak via the trailer.
+		if st, ok := statusFromErr(err); ok {
+			statusCode = int(st.Code())
+			statusMsg = st.Message()
+		} else {
+			// No explicit gRPC status on this error => treat as an internal failure and
+			// scrub the message. (Previously this leaked err.Error() to the browser.)
+			statusCode = int(codes.Internal)
+			statusMsg = genericInternalMessage
+		}
+	}
+
+	s.sendTrailers(stream, statusCode, statusMsg)
+}
+
+// statusFromErr returns the gRPC status only when err carries an explicit gRPC status
+// (i.e. it was produced via status.Error / status.Errorf or implements GRPCStatus()).
+// Plain errors (fmt.Errorf, marshal failures, transport errors) return ok=false so the
+// caller scrubs them to a generic Internal message instead of leaking err.Error().
+func statusFromErr(err error) (*status.Status, bool) {
+	if _, ok := status.FromError(err); !ok {
+		return nil, false
+	}
+	// status.FromError reports ok=true even for non-status errors (mapping them to
+	// codes.Unknown with err.Error() as the message), which is exactly the leak path.
+	// Re-check with the explicit interface so we only trust real gRPC-status errors.
+	if se, ok := err.(interface{ GRPCStatus() *status.Status }); ok {
+		return se.GRPCStatus(), true
+	}
+	return nil, false
+}
+
+// sendTrailers serializes and sends the final TRAILERS frame (grpc-status / grpc-message
+// plus any handler-set trailer metadata) and cleans up the stream.
+func (s *Server) sendTrailers(stream *WebSocketServerStream, statusCode int, statusMsg string) {
+	// Build trailers payload with grpc-status and grpc-message
+	var trailerLines []string
+	trailerLines = append(trailerLines, fmt.Sprintf("grpc-status:%d", statusCode))
+	trailerLines = append(trailerLines, fmt.Sprintf("grpc-message:%s", statusMsg))
+
+	// Add any custom trailer metadata set by the handler
+	stream.headerMu.Lock()
+	if stream.trailer != nil {
+		for k, values := range stream.trailer {
+			for _, v := range values {
+				trailerLines = append(trailerLines, fmt.Sprintf("%s: %s", k, v))
+			}
+		}
+	}
+	stream.headerMu.Unlock()
+
+	trailersPayload := []byte(strings.Join(trailerLines, "\n"))
+	trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
+
+	// Only send trailers if connection is still active
+	if err := stream.conn.send(trailersFrame); err != nil {
+		if s.options.EnableLogging {
+			log.Printf("[wsgrpc] Failed to send trailers for stream %d: %v", stream.streamID, err)
+		}
+	}
+
+	if s.options.EnableLogging {
+		log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, truncateForLog(statusMsg))
+	}
+
+	// Clean up stream from map
+	stream.conn.mu.Lock()
+	delete(stream.conn.streamMap, stream.streamID)
+	stream.conn.mu.Unlock()
+}
+
+// invokeHandler dispatches to the registered unary or streaming handler (with the
+// interceptor chain) and returns the handler error, if any. It is called from within a
+// panic-recovering wrapper in handleStream.
+func (s *Server) invokeHandler(stream *WebSocketServerStream, methodInfo *methodInfo) error {
+	var err error
+
 	// Invoke the appropriate handler based on method type
 	if methodInfo.unaryHandler != nil {
 		// Unary method handler with interceptor chain (if any)
@@ -877,59 +1007,7 @@ func (s *Server) handleStream(stream *WebSocketServerStream, methodInfo *methodI
 		err = fmt.Errorf("no handler found for method")
 	}
 
-	// Default status OK
-	statusCode := 0
-	statusMsg := "OK"
-
-	if err != nil {
-		if s.options.EnableLogging {
-			log.Printf("[wsgrpc] Handler error for stream %d: %v", stream.streamID, err)
-		}
-		// Extract gRPC status code from error
-		if st, ok := status.FromError(err); ok {
-			statusCode = int(st.Code())
-			statusMsg = st.Message()
-		} else {
-			// Fallback to Unknown status
-			statusCode = 2 // Unknown
-			statusMsg = err.Error()
-		}
-	}
-
-	// Build trailers payload with grpc-status and grpc-message
-	var trailerLines []string
-	trailerLines = append(trailerLines, fmt.Sprintf("grpc-status:%d", statusCode))
-	trailerLines = append(trailerLines, fmt.Sprintf("grpc-message:%s", statusMsg))
-
-	// Add any custom trailer metadata set by the handler
-	stream.headerMu.Lock()
-	if stream.trailer != nil {
-		for k, values := range stream.trailer {
-			for _, v := range values {
-				trailerLines = append(trailerLines, fmt.Sprintf("%s: %s", k, v))
-			}
-		}
-	}
-	stream.headerMu.Unlock()
-
-	trailersPayload := []byte(strings.Join(trailerLines, "\n"))
-	trailersFrame := encodeFrame(stream.streamID, FlagTRAILERS, trailersPayload)
-
-	// Only send trailers if connection is still active
-	if err := stream.conn.send(trailersFrame); err != nil {
-		if s.options.EnableLogging {
-			log.Printf("[wsgrpc] Failed to send trailers for stream %d: %v", stream.streamID, err)
-		}
-	}
-
-	if s.options.EnableLogging {
-		log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, truncateForLog(statusMsg))
-	}
-
-	// Clean up stream from map
-	stream.conn.mu.Lock()
-	delete(stream.conn.streamMap, stream.streamID)
-	stream.conn.mu.Unlock()
+	return err
 }
 
 // ListenAndServe starts an HTTP server that handles WebSocket connections
