@@ -15,6 +15,7 @@ jobs:
   go-build-test:
     name: Go - Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       # Disable Go workspace mode so commands operate only on the wsgrpc module.
       # This avoids trying to resolve example/server's dependency on a non-existent tag
@@ -76,7 +77,8 @@ jobs:
   angular-build-test:
     name: Angular - Build & Test
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+
     defaults:
       run:
         working-directory: ./frontend
@@ -140,6 +142,7 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [go-build-test, angular-build-test]
     env:
       COMPOSE_BAKE: true
@@ -161,8 +164,10 @@ jobs:
       run: |
         echo "Waiting for server to be ready..."
         timeout 60 bash -c 'until curl -f http://localhost:8080/health 2>/dev/null || curl -f http://localhost:8080 2>/dev/null; do sleep 2; done' || echo "Server health check skipped"
+        # Frontend is published on host port 8352 (demo-app nginx -> :80); this is the
+        # baseURL the Playwright tests hit. The previous :4200 poll always timed out.
         echo "Waiting for frontend to be ready..."
-        timeout 60 bash -c 'until curl -f http://localhost:4200 2>/dev/null; do sleep 2; done' || echo "Frontend health check skipped"
+        timeout 90 bash -c 'until curl -f http://localhost:8352 2>/dev/null; do sleep 2; done' || echo "Frontend health check skipped"
         sleep 5
     
     - name: Set up Node.js for E2E tests
@@ -174,9 +179,25 @@ jobs:
     
     - name: Install Playwright dependencies
       working-directory: ./e2e-tests
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        npm i
-        npx playwright install --with-deps chromium
+        npm ci
+        # Install OS-level browser dependencies (apt) up front.
+        npx playwright install-deps chromium
+        # The browser download has intermittently hung *after* reaching 100%
+        # (post-download extract/validation never returns), holding the runner
+        # for the full 6h job limit. Bound each attempt with a hard timeout and
+        # retry so a transient hang fails fast and self-recovers instead of zombieing.
+        ok=0
+        for attempt in 1 2 3; do
+          if timeout 240 npx playwright install chromium; then ok=1; break; fi
+          echo "::warning::playwright browser install attempt ${attempt} timed out or failed; retrying..."
+        done
+        if [ "$ok" -ne 1 ]; then
+          echo "::error::playwright browser install failed after 3 attempts"
+          exit 1
+        fi
     
     - name: Run E2E tests
       working-directory: ./e2e-tests
@@ -202,6 +223,7 @@ jobs:
     name: Publish to NPM
     needs: [e2e-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
