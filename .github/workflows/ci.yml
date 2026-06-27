@@ -170,38 +170,31 @@ jobs:
         timeout 90 bash -c 'until curl -f http://localhost:8352 2>/dev/null; do sleep 2; done' || echo "Frontend health check skipped"
         sleep 5
     
-    - name: Set up Node.js for E2E tests
-      uses: actions/setup-node@v6
-      with:
-        node-version: 24
-        cache: 'npm'
-        cache-dependency-path: e2e-tests/package-lock.json
-    
-    - name: Install Playwright dependencies
-      working-directory: ./e2e-tests
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        npm ci
-        # Install OS-level browser dependencies (apt) up front.
-        npx playwright install-deps chromium
-        # The browser download has intermittently hung *after* reaching 100%
-        # (post-download extract/validation never returns), holding the runner
-        # for the full 6h job limit. Bound each attempt with a hard timeout and
-        # retry so a transient hang fails fast and self-recovers instead of zombieing.
-        ok=0
-        for attempt in 1 2 3; do
-          if timeout 240 npx playwright install chromium; then ok=1; break; fi
-          echo "::warning::playwright browser install attempt ${attempt} timed out or failed; retrying..."
-        done
-        if [ "$ok" -ne 1 ]; then
-          echo "::error::playwright browser install failed after 3 attempts"
-          exit 1
-        fi
-    
     - name: Run E2E tests
       working-directory: ./e2e-tests
-      run: npm test
+      run: |
+        # Run Playwright inside the official image (Chromium + all OS deps baked in,
+        # version-matched to @playwright/test@1.57.0). This deliberately avoids
+        # `npx playwright install` on the host: its browser download reliably hangs
+        # after reaching 100% (post-download extraction never returns), which used to
+        # hold the runner for the full 6h job limit.
+        #   --network host  -> reach compose-published services on localhost
+        #                      (frontend :8352, backend :8080)
+        #   --ipc=host      -> recommended for Chromium in Docker (avoids /dev/shm crashes)
+        # The docker socket + CLI + group are mounted in because the network-resilience
+        # specs shell out to `docker stop/start nggorpc-backend` to simulate outages.
+        DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+        docker run --rm --network host --ipc=host \
+          -u "$(id -u):$(id -g)" \
+          --group-add "$DOCKER_GID" \
+          -e HOME=/work \
+          -e CI=true \
+          -e BASE_URL=http://localhost:8352 \
+          -v "$PWD":/work -w /work \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v /usr/bin/docker:/usr/bin/docker:ro \
+          mcr.microsoft.com/playwright:v1.57.0-noble \
+          sh -c "npm ci && npx playwright test"
     
     - name: Upload Playwright report
       if: always()
