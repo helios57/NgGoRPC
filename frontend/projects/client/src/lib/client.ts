@@ -699,8 +699,8 @@ export class NgGoRpcClient {
 interface PendingRequest {
     streamId: number;
     subject: Subject<Uint8Array>;
-    headersFrame: Uint8Array;
-    dataFrame: Uint8Array;
+    headersFrame: Uint8Array<ArrayBuffer>;
+    dataFrame: Uint8Array<ArrayBuffer>;
     methodPath: string;
     dataLength: number;
 }

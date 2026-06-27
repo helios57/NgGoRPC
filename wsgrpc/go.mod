@@ -1,16 +1,16 @@
 module github.com/helios57/NgGoRPC/wsgrpc
 
-go 1.25
+go 1.26.0
 
 require (
-	github.com/coder/websocket v1.8.14
-	google.golang.org/grpc v1.77.0
-	google.golang.org/protobuf v1.36.10
+	github.com/coder/websocket v1.8.15
+	google.golang.org/grpc v1.81.1
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
-	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260622175928-b703f567277d // indirect
 )

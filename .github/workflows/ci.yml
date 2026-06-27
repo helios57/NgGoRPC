@@ -28,12 +28,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
     
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
         cache-dependency-path: wsgrpc/go.sum
     
     - name: Download dependencies
@@ -68,7 +68,7 @@ jobs:
         echo "Coverage check passed: ${COVERAGE}% >= 80%"
     
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v7
       with:
         files: ./wsgrpc/coverage.out
         flags: go
@@ -85,12 +85,12 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
     
     - name: Set up Node.js
       uses: actions/setup-node@v6
       with:
-        node-version: 24
+        node-version: 26
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
 
@@ -123,7 +123,7 @@ jobs:
         fi
     
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v7
       with:
         files: ./frontend/coverage/client/lcov.info
         flags: angular
@@ -133,7 +133,7 @@ jobs:
       run: npm run build:demo
     
     - name: Archive library artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: client-library
         path: frontend/dist/client/
@@ -149,10 +149,10 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
     
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
     
     - name: Build Docker images
       run: docker compose build
@@ -193,12 +193,12 @@ jobs:
           -v "$PWD":/work -w /work \
           -v /var/run/docker.sock:/var/run/docker.sock \
           -v /usr/bin/docker:/usr/bin/docker:ro \
-          mcr.microsoft.com/playwright:v1.57.0-noble \
+          mcr.microsoft.com/playwright:v1.61.1-noble \
           sh -c "npm ci && npx playwright test"
     
     - name: Upload Playwright report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: playwright-report
         path: e2e-tests/playwright-report/
@@ -223,16 +223,16 @@ jobs:
       id-token: write
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
 
     - name: Set up Node.js
       uses: actions/setup-node@v6
       with:
-        node-version: 24
+        node-version: 26
         registry-url: 'https://registry.npmjs.org'
 
     - name: Download library artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: client-library
         path: frontend/dist/client

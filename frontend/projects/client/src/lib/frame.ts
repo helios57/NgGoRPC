@@ -40,7 +40,7 @@ export interface Frame {
  * @param payload - The payload data
  * @returns A Uint8Array containing the complete frame (header + payload)
  */
-export function encodeFrame(streamId: number, flags: number, payload: Uint8Array): Uint8Array {
+export function encodeFrame(streamId: number, flags: number, payload: Uint8Array): Uint8Array<ArrayBuffer> {
   const headerSize = 9;
   const payloadLength = payload.length;
   const frame = new Uint8Array(headerSize + payloadLength);
