@@ -625,4 +625,170 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
       expect((client as any).authToken).toBe('new-token');
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // LERNJ-759 — outbound requests must be gated on the LIVE socket.readyState and
+  // QUEUED (then flushed on open) instead of calling socket.send() into a socket
+  // that is CONNECTING / reconnecting / stale-CLOSING. Calling send() on a
+  // non-OPEN socket throws a synchronous DOMException ("request cannot be
+  // completed in the current state"), which silently dropped the first write on a
+  // freshly-loaded / hard-refreshed page.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('LERNJ-759 — queue outbound requests until the socket is OPEN', () => {
+    let qClient: NgGoRpcClient;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let createdSockets: any[];
+
+    function installSocketFactory(): void {
+      createdSockets = [];
+      // A plain constructor function (NOT a spy) so `new WebSocket(url)` yields a
+      // fresh, distinct mock socket each time (the reconnect test needs two).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      function FakeWebSocket(this: any) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const s: any = {
+          readyState: 0, // CONNECTING — like a real freshly-constructed socket
+          sentFrames: [] as Uint8Array[],
+          onopen: null as ((e: Event) => void) | null,
+          onclose: null as ((e: CloseEvent) => void) | null,
+          onerror: null as ((e: Event) => void) | null,
+          onmessage: null as ((e: MessageEvent) => void) | null,
+          close: jasmine.createSpy('close'),
+          send: jasmine.createSpy('send'),
+        };
+        s.send.and.callFake((d: Uint8Array) => {
+          // Faithful to the browser contract: send() on a non-OPEN socket throws.
+          if (s.readyState !== 1) {
+            throw new DOMException(
+              'request cannot be completed in the current state',
+              'InvalidStateError',
+            );
+          }
+          s.sentFrames.push(new Uint8Array(d));
+        });
+        createdSockets.push(s);
+        return s; // returning an object from a constructor makes `new` yield it
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (FakeWebSocket as any).OPEN = 1;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).WebSocket = FakeWebSocket;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function openSocket(s: any): void {
+      s.readyState = 1; // OPEN
+      s.onopen(new Event('open'));
+    }
+
+    beforeEach(() => {
+      installSocketFactory();
+      qClient = new NgGoRpcClient(new MockNgZone() as unknown as import('@angular/core').NgZone);
+    });
+
+    afterEach(() => {
+      qClient.disconnect();
+    });
+
+    it('queues a request issued before the socket opens and flushes it on open', () => {
+      qClient.connect('ws://localhost:8080', true);
+      const sock = createdSockets[0];
+      expect(sock.readyState).toBe(0); // CONNECTING
+
+      const sub = qClient
+        .request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3]))
+        .subscribe();
+
+      // Nothing sent yet; the request sits in the queue, NOT the active stream map.
+      expect(sock.send).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).streamMap.size).toBe(0);
+
+      // Socket opens → queued request flushes (HEADERS + DATA).
+      openSocket(sock);
+      expect(sock.send).toHaveBeenCalledTimes(2);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).streamMap.size).toBe(1);
+
+      sub.unsubscribe();
+    });
+
+    it('does NOT throw when a request is issued while the socket is stale (CLOSING before onclose)', () => {
+      qClient.connect('ws://localhost:8080', true);
+      const sock = createdSockets[0];
+      openSocket(sock);
+      expect(qClient.isConnected()).toBe(true);
+
+      // The socket silently moves to CLOSING (server close / pong timeout / drop)
+      // but onclose has NOT fired yet — `connected` still reports true. A write here
+      // used to call send() on a non-OPEN socket and throw the DOMException.
+      sock.readyState = 2; // CLOSING
+
+      let errored: unknown = null;
+      expect(() => {
+        qClient
+          .request('test.Service', 'TestMethod', new Uint8Array([9]))
+          .subscribe({ error: (e) => (errored = e) });
+      }).not.toThrow();
+
+      // Buffered, not sent, not errored.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(1);
+      expect(errored).toBeNull();
+    });
+
+    it('flushes a request buffered during a reconnect once the new socket opens', () => {
+      qClient.connect('ws://localhost:8080', true);
+      const first = createdSockets[0];
+      openSocket(first);
+
+      // Connection drops → onclose nulls the socket and schedules a reconnect.
+      first.readyState = 3; // CLOSED
+      first.onclose(new CloseEvent('close'));
+
+      // A write issued during the Reconnecting window must NOT throw — it queues.
+      let errored: unknown = null;
+      expect(() => {
+        qClient
+          .request('test.Service', 'AfterDrop', new Uint8Array([7]))
+          .subscribe({ error: (e) => (errored = e) });
+      }).not.toThrow();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(1);
+
+      // Reconnect timer fires → a fresh socket is created.
+      jasmine.clock().tick(5000);
+      expect(createdSockets.length).toBe(2);
+      const second = createdSockets[1];
+
+      // New socket opens → the buffered request flushes onto it (HEADERS + DATA).
+      openSocket(second);
+      expect(second.send).toHaveBeenCalledTimes(2);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(0);
+      expect(errored).toBeNull();
+    });
+
+    it('fails still-queued requests with UNAVAILABLE on disconnect()', () => {
+      qClient.connect('ws://localhost:8080', true);
+      // Socket stays CONNECTING (never opens).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let errored: any = null;
+      qClient
+        .request('test.Service', 'NeverOpens', new Uint8Array([1]))
+        .subscribe({ error: (e) => (errored = e) });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(1);
+
+      qClient.disconnect();
+
+      expect(errored).toEqual(jasmine.objectContaining({ code: 14 })); // UNAVAILABLE
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((qClient as any).pendingRequests.length).toBe(0);
+    });
+  });
 });

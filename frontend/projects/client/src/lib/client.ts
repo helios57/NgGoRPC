@@ -33,6 +33,13 @@ export class NgGoRpcClient {
     private socket: WebSocket | null = null;
     private connected = false;
     private streamMap: Map<number, Subject<Uint8Array>> = new Map();
+    /**
+     * Requests that were issued while the socket was NOT in the OPEN state
+     * (initial connect, mid-reconnect, or a stale socket whose async `onclose`
+     * has not fired yet). They are buffered here and flushed verbatim the moment
+     * the socket next reaches OPEN. See `request()` / `flushPendingRequests()`.
+     */
+    private pendingRequests: PendingRequest[] = [];
     private nextStreamId = 1; // Client-initiated streams use odd numbers
     private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
     private reconnectAttempt = 0;
@@ -109,6 +116,10 @@ export class NgGoRpcClient {
                 this.reconnectAttempt = 0; // Reset reconnection counter on successful connection
                 this.startPingInterval();
                 this._connectionState$.next(ConnectionState.Connected);
+                // LERNJ-759: flush any requests that were queued while the socket
+                // was still CONNECTING / reconnecting. Done AFTER the state flip
+                // so subscribers observing `Connected` see a socket that can send.
+                this.flushPendingRequests();
             };
 
             this.socket.onmessage = (event: MessageEvent) => {
@@ -394,6 +405,11 @@ export class NgGoRpcClient {
             this.reconnectTimeoutId = null;
         }
 
+        // Fail any still-queued (never-sent) requests — disconnect is terminal,
+        // so they will never get an OPEN socket to flush onto. (reconnect() does
+        // NOT do this: there the queue must survive and flush on the new socket.)
+        this.rejectPendingRequests('Connection closed before request was sent');
+
         if (this.socket) {
             this.socket.close();
             this.socket = null;
@@ -506,17 +522,15 @@ export class NgGoRpcClient {
      * @returns An Observable that emits the response data
      */
     request(service: string, method: string, data: Uint8Array, metadata?: Record<string, string>): Observable<Uint8Array> {
-        if (!this.socket || !this.connected) {
-            throw new Error('WebSocket is not connected');
-        }
-
         // Generate a new odd-numbered stream ID
         if (this.nextStreamId > 0xFFFFFFFF) {
             // Stream ID exhaustion protection
             // PROTOCOL.md: "Stream IDs MUST NOT be reused within the lifespan of a single WebSocket connection"
             const errorMsg = 'Stream ID exhaustion';
             console.error(`[NgGoRpcClient] ${errorMsg}`);
-            this.socket.close(4000, errorMsg);
+            if (this.socket) {
+                this.socket.close(4000, errorMsg);
+            }
             throw new Error(errorMsg);
         }
 
@@ -525,9 +539,8 @@ export class NgGoRpcClient {
 
         // Create a subject for this stream
         const subject = new Subject<Uint8Array>();
-        this.streamMap.set(streamId, subject);
 
-        // Send HEADERS frame with method path and optional auth token
+        // Build HEADERS frame with method path and optional auth token / metadata.
         const methodPath = `/${service}/${method}`;
         let headersText = `path: ${methodPath}`;
 
@@ -543,18 +556,29 @@ export class NgGoRpcClient {
 
         const headersPayload = new TextEncoder().encode(headersText);
         const headersFrame = encodeFrame(streamId, FrameFlags.HEADERS, headersPayload);
-        this.socket.send(headersFrame);
-
-        if (this.enableLogging) {
-            console.log(`[NgGoRpcClient] Sending HEADERS for stream ${streamId}: ${truncateForLog(methodPath)}`);
-        }
-
-        // Send DATA frame with request payload (with EOS flag for unary calls)
+        // Build DATA frame with request payload (with EOS flag for unary calls)
         const dataFrame = encodeFrame(streamId, FrameFlags.DATA | FrameFlags.EOS, data);
-        this.socket.send(dataFrame);
 
-        if (this.enableLogging) {
-            console.log(`[NgGoRpcClient] Sending DATA for stream ${streamId}, size: ${data.length} bytes`);
+        const pending: PendingRequest = { streamId, subject, headersFrame, dataFrame, methodPath, dataLength: data.length };
+
+        // LERNJ-759 (transport reliability): gate on the LIVE `socket.readyState`,
+        // NEVER the lagging `this.connected` flag. `connected` is only flipped to
+        // false in the asynchronous `onclose` handler, so there is a real window in
+        // which the socket has already moved to CLOSING/CLOSED (server close, pong
+        // timeout, network drop) — or is still CONNECTING during a reconnect — while
+        // `connected` / `connectionState$` still report Connected. Calling
+        // `socket.send()` in that window throws a synchronous DOMException
+        // ("...request cannot be completed in the current state" / WebSocket "is not
+        // connected"). Instead of throwing (which silently dropped the first write
+        // on a freshly-loaded / hard-refreshed page), buffer the request and flush
+        // it the instant the socket reaches OPEN — including after a reconnect.
+        if (this.isSocketOpen()) {
+            this.dispatchRequest(pending);
+        } else {
+            this.pendingRequests.push(pending);
+            if (this.enableLogging) {
+                console.log(`[NgGoRpcClient] Socket not OPEN — queued stream ${streamId} (${this.pendingRequests.length} pending)`);
+            }
         }
 
         // Return an Observable with proper teardown logic for cancellation
@@ -565,8 +589,14 @@ export class NgGoRpcClient {
             // Teardown logic - executes when the Observable is unsubscribed
             return () => {
                 subscription.unsubscribe();
-                // Remove from map
+                // Remove from map (no-op if it was never dispatched)
                 this.streamMap.delete(streamId);
+
+                // Drop from the pending queue if it was cancelled before it was sent.
+                const idx = this.pendingRequests.indexOf(pending);
+                if (idx !== -1) {
+                    this.pendingRequests.splice(idx, 1);
+                }
 
                 // Send RST_STREAM to server if connection is still open
                 if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -583,6 +613,96 @@ export class NgGoRpcClient {
             };
         });
     }
+
+    /**
+     * Returns true only when there is a socket AND it is in the OPEN readyState.
+     * This is the single source of truth for "can we send right now?" — it reads
+     * the live browser socket state rather than the lagging `connected` flag.
+     */
+    private isSocketOpen(): boolean {
+        return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+    }
+
+    /**
+     * Writes a request's HEADERS + DATA frames onto the open socket and registers
+     * its subject for response routing. Registration happens here (at send time)
+     * rather than in `request()` so a request that is still QUEUED is never errored
+     * by `errorOutActiveStreams()` on an earlier close — it survives to flush onto
+     * the next connection.
+     */
+    private dispatchRequest(pending: PendingRequest): void {
+        this.streamMap.set(pending.streamId, pending.subject);
+        try {
+            this.socket!.send(pending.headersFrame);
+            if (this.enableLogging) {
+                console.log(`[NgGoRpcClient] Sending HEADERS for stream ${pending.streamId}: ${truncateForLog(pending.methodPath)}`);
+            }
+            this.socket!.send(pending.dataFrame);
+            if (this.enableLogging) {
+                console.log(`[NgGoRpcClient] Sending DATA for stream ${pending.streamId}, size: ${pending.dataLength} bytes`);
+            }
+        } catch (err) {
+            // The socket flipped out of OPEN between the readyState check and the
+            // synchronous send (an extremely narrow race). Re-queue so the next
+            // onopen flushes it instead of surfacing a hard error to the caller.
+            this.streamMap.delete(pending.streamId);
+            this.pendingRequests.push(pending);
+            console.warn(`[NgGoRpcClient] send() failed for stream ${pending.streamId}; re-queued`, err);
+        }
+    }
+
+    /**
+     * Flushes all queued requests onto the socket. Called from `onopen` (initial
+     * connect AND every reconnect), so a request issued at any point during a
+     * connect/reconnect window is sent exactly once, in issue order, the moment
+     * the socket is genuinely OPEN.
+     */
+    private flushPendingRequests(): void {
+        if (!this.isSocketOpen() || this.pendingRequests.length === 0) {
+            return;
+        }
+        // Swap out the queue first so a synchronous re-queue (see dispatchRequest's
+        // catch) lands in the new array and is retried on the next open, not now.
+        const queued = this.pendingRequests;
+        this.pendingRequests = [];
+        if (this.enableLogging) {
+            console.log(`[NgGoRpcClient] Flushing ${queued.length} queued request(s)`);
+        }
+        for (const pending of queued) {
+            this.dispatchRequest(pending);
+        }
+    }
+
+    /**
+     * Errors out every still-queued (never-sent) request. Used by `disconnect()`
+     * — a terminal teardown after which no socket will ever open to flush them.
+     */
+    private rejectPendingRequests(reason: string): void {
+        if (this.pendingRequests.length === 0) {
+            return;
+        }
+        const queued = this.pendingRequests;
+        this.pendingRequests = [];
+        const runInside = (fn: () => void) => this.ngZone ? this.ngZone.run(fn) : fn();
+        runInside(() => {
+            for (const pending of queued) {
+                pending.subject.error(new GrpcError(GrpcStatus.UNAVAILABLE, reason));
+            }
+        });
+    }
+}
+
+/**
+ * A request buffered while the socket was not OPEN. Its frames are pre-encoded so
+ * it can be flushed verbatim (and exactly once) when the socket next opens.
+ */
+interface PendingRequest {
+    streamId: number;
+    subject: Subject<Uint8Array>;
+    headersFrame: Uint8Array;
+    dataFrame: Uint8Array;
+    methodPath: string;
+    dataLength: number;
 }
 
 /**
