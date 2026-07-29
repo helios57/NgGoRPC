@@ -981,10 +981,20 @@ func (s *Server) invokeHandler(stream *WebSocketServerStream, methodInfo *method
 		}
 	} else if methodInfo.streamHandler != nil {
 		// Streaming method handler with interceptor chain (if any)
+		//
+		// IsClientStream / IsServerStream are read from the registered
+		// grpc.StreamDesc, which protoc-gen-go-grpc fills in from the .proto
+		// (`stream` on the request and/or the response). They used to be
+		// hard-coded to false/true, which mislabelled every client-streaming and
+		// bidirectional method as server-streaming. grpc.StreamServerInfo is part
+		// of the interceptor contract — go-grpc-prometheus and every other
+		// ecosystem interceptor derive the RPC kind from exactly these two fields
+		// — so a hard-coded value silently produces wrong observability data and
+		// wrong behaviour in any interceptor that branches on the RPC kind.
 		info := &grpc.StreamServerInfo{
 			FullMethod:     stream.method,
-			IsClientStream: false,
-			IsServerStream: true,
+			IsClientStream: methodInfo.streamHandler.ClientStreams,
+			IsServerStream: methodInfo.streamHandler.ServerStreams,
 		}
 
 		h := func(srv interface{}, ss grpc.ServerStream) error {

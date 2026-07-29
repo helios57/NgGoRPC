@@ -1935,3 +1935,88 @@ func TestStreamInterceptor(t *testing.T) {
 
 	t.Log("Stream interceptor test completed")
 }
+
+// TestStreamInterceptorReportsRPCKind pins that grpc.StreamServerInfo reports the
+// REAL RPC kind, taken from the registered grpc.StreamDesc.
+//
+// Both fields used to be hard-coded (IsClientStream: false, IsServerStream: true),
+// so every client-streaming and bidirectional method was announced to the
+// interceptor chain as server-streaming. StreamServerInfo is part of the public
+// interceptor contract: go-grpc-prometheus and the whole ecosystem derive the
+// grpc_type label from exactly these two booleans, and auth/limit interceptors
+// legitimately branch on them. A hard-coded value is therefore not cosmetic — it
+// silently produces wrong observability data and can produce wrong behaviour,
+// and nothing in a caller's own tests can detect it.
+//
+// The table drives one real RPC per kind through a real WebSocket and asserts the
+// booleans the interceptor actually received.
+func TestStreamInterceptorReportsRPCKind(t *testing.T) {
+	cases := []struct {
+		name          string
+		streamName    string
+		serverStreams bool
+		clientStreams bool
+	}{
+		{"server streaming", "ServerStreamRPC", true, false},
+		{"client streaming", "ClientStreamRPC", false, true},
+		{"bidirectional streaming", "BidiStreamRPC", true, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			type capture struct {
+				isClient bool
+				isServer bool
+			}
+			got := make(chan capture, 1)
+
+			interceptor := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+				got <- capture{isClient: info.IsClientStream, isServer: info.IsServerStream}
+				return handler(srv, ss)
+			}
+
+			server := NewServer(
+				ServerOption{InsecureSkipVerify: true},
+				WithStreamInterceptor(interceptor),
+			)
+			server.RegisterService(&grpc.ServiceDesc{
+				ServiceName: "greeter.Greeter",
+				HandlerType: (*interface{})(nil),
+				Streams: []grpc.StreamDesc{{
+					StreamName:    tc.streamName,
+					Handler:       func(interface{}, grpc.ServerStream) error { return nil },
+					ServerStreams: tc.serverStreams,
+					ClientStreams: tc.clientStreams,
+				}},
+			}, nil)
+
+			httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			conn, _, err := websocket.Dial(ctx, "ws"+httpServer.URL[4:], nil)
+			if err != nil {
+				t.Fatalf("Failed to dial WebSocket: %v", err)
+			}
+			defer func() { _ = conn.Close(websocket.StatusNormalClosure, "test complete") }()
+
+			headers := "path: /greeter.Greeter/" + tc.streamName + "\n"
+			if err := conn.Write(ctx, websocket.MessageBinary, encodeFrame(1, FlagHEADERS, []byte(headers))); err != nil {
+				t.Fatalf("Failed to send HEADERS: %v", err)
+			}
+
+			select {
+			case c := <-got:
+				if c.isClient != tc.clientStreams || c.isServer != tc.serverStreams {
+					t.Errorf("StreamServerInfo for a %s RPC: got IsClientStream=%v IsServerStream=%v, want %v/%v — "+
+						"the interceptor chain cannot tell what kind of RPC this is",
+						tc.name, c.isClient, c.isServer, tc.clientStreams, tc.serverStreams)
+				}
+			case <-ctx.Done():
+				t.Fatal("stream interceptor was never called")
+			}
+		})
+	}
+}
