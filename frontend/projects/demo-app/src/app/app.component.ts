@@ -5,6 +5,19 @@ import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
 import { Tick, HelloResponse, GreeterDefinition } from './generated/greeter';
 import { Subscription } from 'rxjs';
 
+/**
+ * E2E test hooks. The Playwright specs reach into the running app through these two globals
+ * (see e2e-tests/tests/large-metadata.spec.ts and resource-exhaustion.spec.ts) — they are part of
+ * the demo's contract with the test suite, not leftover debug code. Declaring them here keeps the
+ * assignment below type-checked instead of casting `window` to `any`.
+ */
+declare global {
+  interface Window {
+    GreeterDefinition: typeof GreeterDefinition;
+    appComponent: AppComponent;
+  }
+}
+
 @Component({
   selector: 'app-root',
   imports: [CommonModule, FormsModule],
@@ -68,10 +81,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.rpcClient.connect(wsUrl, true);
 
     // Expose GreeterDefinition and component instance on window for E2E tests
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).GreeterDefinition = GreeterDefinition;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).appComponent = this;
+    window.GreeterDefinition = GreeterDefinition;
+    window.appComponent = this;
 
     // Monitor connection status with periodic checks
     this.statusCheckInterval = setInterval(() => {

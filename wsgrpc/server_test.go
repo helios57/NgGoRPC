@@ -2,6 +2,7 @@ package wsgrpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -217,7 +218,7 @@ func TestStreamIsolation(t *testing.T) {
 					for {
 						var req pb.HelloRequest
 						if err := stream.RecvMsg(&req); err != nil {
-							if err == io.EOF {
+							if errors.Is(err, io.EOF) {
 								return nil
 							}
 							return err
@@ -1198,7 +1199,7 @@ func TestShutdownRejectsNewConnections(t *testing.T) {
 	// Wait for shutdown to complete
 	select {
 	case err := <-shutdownDone:
-		if err != nil && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			t.Logf("Shutdown completed with: %v", err)
 		}
 	case <-time.After(6 * time.Second):

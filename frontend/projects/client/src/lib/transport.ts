@@ -10,8 +10,12 @@ import {NgGoRpcClient} from './client';
 export interface MessageFns<T> {
   encode(message: T, writer?: unknown): { finish(): Uint8Array };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  decode(input: any, length?: number): T;
+  /**
+   * Decode a wire-format message. ts-proto generates `decode(input: BinaryReader | Uint8Array, …)`,
+   * which satisfies this narrower signature — the transport only ever hands it the raw bytes that
+   * came off the socket, so declaring the wider union here would buy nothing and cost the type.
+   */
+  decode(input: Uint8Array, length?: number): T;
 
   fromJSON(object: unknown): T;
 
@@ -78,26 +82,23 @@ export class WebSocketRpcTransport {
     data?: TRequest,
     metadata?: Record<string, string>
   ): Observable<TResponse> {
-    const serviceDef = service as ServiceDefinition;
-    const methodDesc = method as MethodDescriptor<TRequest, TResponse>;
-
     // Encode request data if provided, otherwise use empty message
     let encodedData: Uint8Array;
     if (data !== undefined) {
-      encodedData = methodDesc.requestType.encode(data as TRequest).finish();
+      encodedData = method.requestType.encode(data).finish();
     } else {
       // Create empty message
-      const emptyMessage = methodDesc.requestType.create({});
-      encodedData = methodDesc.requestType.encode(emptyMessage).finish();
+      const emptyMessage = method.requestType.create({});
+      encodedData = method.requestType.encode(emptyMessage).finish();
     }
 
     // Make request and automatically decode response
     const resp$ = metadata
-      ? this.client.request(serviceDef.fullName, methodDesc.name, encodedData, metadata)
-      : this.client.request(serviceDef.fullName, methodDesc.name, encodedData);
+      ? this.client.request(service.fullName, method.name, encodedData, metadata)
+      : this.client.request(service.fullName, method.name, encodedData);
 
     return resp$.pipe(
-      map((responseData: Uint8Array) => methodDesc.responseType.decode(responseData))
+      map((responseData: Uint8Array) => method.responseType.decode(responseData))
     );
   }
 
@@ -115,10 +116,13 @@ export class WebSocketRpcTransport {
     service: ServiceDefinition,
     method: MethodDescriptor<TRequest, TResponse>,
     data?: TRequest,
-    options?: ToSignalOptions<unknown>
+    // Deliberately the narrow overload: this method always returns `TResponse | undefined`, so it
+    // cannot accept `requireSync`/`initialValue` — those change toSignal's return type to a
+    // non-undefined `Signal<TResponse>` and the old `ToSignalOptions<unknown>` signature let a
+    // caller pass them and be handed a lying type.
+    options?: ToSignalOptions<TResponse | undefined> & { initialValue?: undefined; requireSync?: false }
   ): Signal<TResponse | undefined> {
     const observable = this.request(service, method, data);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return toSignal(observable, options as any);
+    return options ? toSignal(observable, options) : toSignal(observable);
   }
 }
