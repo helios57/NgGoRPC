@@ -103,9 +103,26 @@ jobs:
     - name: Build library
       run: npm run build:lib
     
+    # `client` is the only project with a unit-test target, and that is deliberate
+    # (2026-08-06). demo-app previously had one configured in angular.json and it
+    # could not run: the project has zero spec files, so the karma builder aborted
+    # with `TS18003: No inputs were found in config file
+    # projects/demo-app/tsconfig.spec.json`. Nothing invoked it, so it never fired
+    # — a configured target that would fail the moment anyone tried it.
+    #
+    # It was removed rather than backfilled with a smoke spec because demo-app is
+    # already covered twice over in this same workflow, and more strongly:
+    #   - "Build demo app" below AOT-compiles it (the repo's typecheck), and
+    #   - the e2e-tests job runs 9 Playwright suites against the real demo-app
+    #     image (demo-app/Dockerfile -> nginx :8352) wired to the live backend.
+    # A TestBed smoke spec would duplicate the weaker half of that.
+    #
+    # If demo-app ever gains real specs, restore a `test` target for it in
+    # angular.json together with a tsconfig.spec.json and add it here — a spec
+    # file with no target that runs it is the same false green in reverse.
     - name: Run unit tests with coverage
       run: npm run test:coverage
-    
+
     - name: Check coverage threshold
       run: |
         COVERAGE_FILE="coverage/client/coverage-summary.json"
