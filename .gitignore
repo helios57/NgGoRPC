@@ -1,12 +1,16 @@
 /.idea/
-/nggorpc-client/node_modules/
 /.output.txt
-*/node_modules/
-**/node_modules/
 node_modules/
+
+# Playwright
 /e2e-tests/playwright-report/
 /e2e-tests/test-results
 /e2e-tests/test-results.log
+
+# Go coverage
 /wsgrpc/coverage
 /wsgrpc/coverage.out
+
+# `go build` output in example/server (the dir and the binary share a name)
+/example/server/server
 /example/server/server.exe
