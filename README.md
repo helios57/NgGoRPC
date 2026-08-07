@@ -19,7 +19,10 @@ It is designed to provide the rich, type-safe developer experience of gRPC witho
 
 ## Core Features
 
--   **Full Duplex Streaming**: Native support for unary, server-streaming, client-streaming, and bidirectional RPCs.
+-   **Streaming**: unary, server-streaming and client-streaming RPCs. The Go server side speaks all
+    four kinds including bidirectional; the browser client sends a client-stream's messages as one
+    batch (`transport.clientStream(...)`), so interleaving sends with received responses — true
+    bidi from the browser — is not exposed yet.
 -   **Multiplexing over a Single Connection**: Run multiple concurrent RPCs over one WebSocket, avoiding connection limits and head-of-line blocking.
 -   **Zero Dependencies on Proxies**: Simplifies your architecture by allowing your Angular application to connect directly to your Go service.
 -   **Optimized for Angular**: Integrates seamlessly with Angular's reactive patterns and uses `NgZone` optimizations to prevent UI performance degradation from high-frequency stream updates.

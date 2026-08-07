@@ -798,8 +798,29 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				continue
 			}
 
-			// Send data to stream's channel
-			stream.recvChan <- frame.Payload
+			// Send data to stream's channel.
+			//
+			// This send MUST NOT be able to block forever: recvChan is the
+			// connection's SHARED read pump, so a stream nobody is draining stops
+			// every other multiplexed stream on the socket, not just its own.
+			// The reachable case is ordinary, not exotic — a client-streaming
+			// handler that rejects an upload after inspecting the header (bad
+			// MIME, over-size, unauthorised) returns while the client is still
+			// pushing chunks, and a 5 MiB upload in 64 KiB chunks is 80 DATA
+			// frames against a buffer of 10. handleStream cancels stream.ctx once
+			// the trailers are out, which is what releases us here.
+			//
+			// This is deadlock-safety, NOT flow control: a handler that is merely
+			// SLOW still applies backpressure to the whole connection, because the
+			// protocol has no per-stream windowing. That limitation is unchanged.
+			select {
+			case stream.recvChan <- frame.Payload:
+			case <-stream.ctx.Done():
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Stream %d finished; dropping late DATA frame", frame.StreamID)
+				}
+				continue
+			}
 
 			// If EOS flag is set, close the receive channel
 			if frame.Flags&FlagEOS != 0 {
@@ -928,6 +949,16 @@ func (s *Server) sendTrailers(stream *WebSocketServerStream, statusCode int, sta
 
 	if s.options.EnableLogging {
 		log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, truncateForLog(statusMsg))
+	}
+
+	// The stream is over: cancel its context BEFORE unregistering it. Without
+	// this the context was simply leaked (nothing else calls stream.cancel on the
+	// normal completion path), and — the reason it matters beyond hygiene — the
+	// read pump's send on recvChan selects on exactly this Done channel. A
+	// handler that returns while the client is still sending would otherwise
+	// leave the pump blocked on a buffer nobody will ever drain.
+	if stream.cancel != nil {
+		stream.cancel()
 	}
 
 	// Clean up stream from map

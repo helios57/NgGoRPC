@@ -1,5 +1,5 @@
 import {NgZone} from '@angular/core';
-import {BehaviorSubject, Observable, Subject} from 'rxjs';
+import {BehaviorSubject, Observable, Subject, throwError} from 'rxjs';
 import {decodeFrame, encodeFrame, FrameFlags} from './frame';
 import {WebSocketRpcTransport} from './transport';
 import {GrpcError, GrpcStatus} from './errors';
@@ -522,6 +522,70 @@ export class NgGoRpcClient {
      * @returns An Observable that emits the response data
      */
     request(service: string, method: string, data: Uint8Array, metadata?: Record<string, string>): Observable<Uint8Array> {
+        return this.openStream(service, method, [data], metadata);
+    }
+
+    /**
+     * Sends a CLIENT-STREAMING RPC: one HEADERS frame, then one DATA frame per
+     * request message, of which only the LAST carries EOS (PROTOCOL.md 6.3).
+     *
+     * WHY THIS EXISTS
+     * ---------------
+     * `request()` has always emitted exactly one `DATA | EOS` frame, so a
+     * client-streaming method invoked through it reaches the server as a
+     * one-message stream that is immediately half-closed. The Go half of this
+     * project has supported client streaming since the beginning
+     * (`IsClientStream` in wsgrpc/server.go, `RecvMsg` on the server stream) and
+     * PROTOCOL.md 6.3 specifies the framing — the browser client was the only
+     * side that could not speak it, and the gap was invisible because a
+     * one-message stream is a well-formed frame sequence that the server
+     * rejects at the APPLICATION layer, not the transport one.
+     *
+     * Two downstream features had already shipped on top of that gap and both
+     * were dead on arrival: ContentService.UploadAudioAsset (header-then-chunks)
+     * degraded to a client-computed sha256 with an empty asset id, and
+     * FeedbackService.UploadTicketAttachment had no caller at all.
+     *
+     * WHY AN ARRAY AND NOT AN OBSERVABLE OF MESSAGES
+     * ----------------------------------------------
+     * Every frame is encoded up front and queued as one unit so that a call
+     * issued while the socket is CONNECTING (or mid-reconnect) is flushed
+     * exactly once, in order, the moment it reaches OPEN — the LERNJ-759
+     * reliability property that `openStream` provides for unary calls. An async
+     * producer would have to be buffered to the same effect, and the callers
+     * that need this (file uploads) already hold every byte in memory before
+     * they start chunking.
+     *
+     * @param messages - the request messages, already serialised. Must be
+     *                   non-empty: the framing puts EOS on the last DATA frame,
+     *                   so there is no frame on which to carry it for an empty
+     *                   stream, and every real caller sends at least a header.
+     */
+    requestClientStream(
+        service: string,
+        method: string,
+        messages: readonly Uint8Array[],
+        metadata?: Record<string, string>
+    ): Observable<Uint8Array> {
+        if (messages.length === 0) {
+            return throwError(() => new GrpcError(
+                GrpcStatus.INVALID_ARGUMENT,
+                'requestClientStream requires at least one message: EOS is carried on the last DATA frame'
+            ));
+        }
+        return this.openStream(service, method, messages, metadata);
+    }
+
+    /**
+     * Opens one stream: HEADERS, then one DATA frame per message with EOS on the
+     * last. Shared by `request()` (one message) and `requestClientStream()`.
+     */
+    private openStream(
+        service: string,
+        method: string,
+        messages: readonly Uint8Array[],
+        metadata?: Record<string, string>
+    ): Observable<Uint8Array> {
         // Generate a new odd-numbered stream ID
         if (this.nextStreamId > 0xFFFFFFFF) {
             // Stream ID exhaustion protection
@@ -556,10 +620,16 @@ export class NgGoRpcClient {
 
         const headersPayload = new TextEncoder().encode(headersText);
         const headersFrame = encodeFrame(streamId, FrameFlags.HEADERS, headersPayload);
-        // Build DATA frame with request payload (with EOS flag for unary calls)
-        const dataFrame = encodeFrame(streamId, FrameFlags.DATA | FrameFlags.EOS, data);
+        // One DATA frame per message. EOS goes on the LAST one only: for a unary
+        // call that is the single frame (unchanged behaviour), for a
+        // client-streaming call it is the half-close the server waits for.
+        const lastIndex = messages.length - 1;
+        const dataFrames = messages.map((message, i) =>
+            encodeFrame(streamId, i === lastIndex ? FrameFlags.DATA | FrameFlags.EOS : FrameFlags.DATA, message)
+        );
+        const dataLength = messages.reduce((total, message) => total + message.length, 0);
 
-        const pending: PendingRequest = { streamId, subject, headersFrame, dataFrame, methodPath, dataLength: data.length };
+        const pending: PendingRequest = { streamId, subject, headersFrame, dataFrames, methodPath, dataLength };
 
         // LERNJ-759 (transport reliability): gate on the LIVE `socket.readyState`,
         // NEVER the lagging `this.connected` flag. `connected` is only flipped to
@@ -632,22 +702,43 @@ export class NgGoRpcClient {
      */
     private dispatchRequest(pending: PendingRequest): void {
         this.streamMap.set(pending.streamId, pending.subject);
+        // Frames actually handed to the socket. A re-queue is only safe while
+        // this is still 0 — see the catch below.
+        let sent = 0;
         try {
             this.socket!.send(pending.headersFrame);
+            sent++;
             if (this.enableLogging) {
                 console.log(`[NgGoRpcClient] Sending HEADERS for stream ${pending.streamId}: ${truncateForLog(pending.methodPath)}`);
             }
-            this.socket!.send(pending.dataFrame);
+            for (const dataFrame of pending.dataFrames) {
+                this.socket!.send(dataFrame);
+                sent++;
+            }
             if (this.enableLogging) {
-                console.log(`[NgGoRpcClient] Sending DATA for stream ${pending.streamId}, size: ${pending.dataLength} bytes`);
+                console.log(`[NgGoRpcClient] Sending ${pending.dataFrames.length} DATA frame(s) for stream ${pending.streamId}, total size: ${pending.dataLength} bytes`);
             }
         } catch (err) {
             // The socket flipped out of OPEN between the readyState check and the
-            // synchronous send (an extremely narrow race). Re-queue so the next
-            // onopen flushes it instead of surfacing a hard error to the caller.
+            // synchronous send (an extremely narrow race).
             this.streamMap.delete(pending.streamId);
-            this.pendingRequests.push(pending);
-            console.warn(`[NgGoRpcClient] send() failed for stream ${pending.streamId}; re-queued`, err);
+            if (sent === 0) {
+                // Nothing reached the wire, so the stream ID was never used.
+                // Re-queue and let the next onopen flush it — this is the
+                // LERNJ-759 resilience path and it stays intact.
+                this.pendingRequests.push(pending);
+                console.warn(`[NgGoRpcClient] send() failed for stream ${pending.streamId} before any frame left; re-queued`, err);
+                return;
+            }
+            // PART of the stream is already on the wire. Re-queueing would resend
+            // HEADERS on a stream ID the server has already opened, which
+            // PROTOCOL.md forbids ("Stream IDs MUST NOT be reused"), and for a
+            // client-streaming call would also duplicate the DATA frames that
+            // did get through — a silently corrupted upload rather than a failed
+            // one. Fail the call honestly instead; the caller can retry, which
+            // allocates a fresh stream ID.
+            console.warn(`[NgGoRpcClient] send() failed for stream ${pending.streamId} after ${sent} frame(s); failing the call`, err);
+            pending.subject.error(new GrpcError(GrpcStatus.UNAVAILABLE, 'connection closed mid-request'));
         }
     }
 
@@ -700,7 +791,13 @@ interface PendingRequest {
     streamId: number;
     subject: Subject<Uint8Array>;
     headersFrame: Uint8Array<ArrayBuffer>;
-    dataFrame: Uint8Array<ArrayBuffer>;
+    /**
+     * The DATA frames for this request, in wire order. A unary or
+     * server-streaming call has exactly one (carrying EOS); a client-streaming
+     * call has one per request message and only the LAST carries EOS
+     * (PROTOCOL.md 6.3).
+     */
+    dataFrames: Uint8Array<ArrayBuffer>[];
     methodPath: string;
     dataLength: number;
 }
