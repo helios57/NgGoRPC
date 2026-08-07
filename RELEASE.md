@@ -18,9 +18,10 @@ This document outlines the process for creating and publishing releases of NgGoR
    cd wsgrpc
    go test -v -race -coverprofile=coverage.out ./...
    
-   # Run Angular tests
+   # Run Angular tests (writes coverage/client/coverage-summary.json, which the
+   # CI threshold check below reads)
    cd ../frontend
-   npm test:client -- --coverage --watch=false
+   npm run test:coverage
    
    # Run E2E tests
    cd ../e2e-tests
@@ -151,8 +152,11 @@ If a release needs to be rolled back:
 
 2. **Unpublish from npm** (if applicable)
    ```bash
-   npm unpublish @nggorpc/client@X.Y.Z
+   npm unpublish nggorpc@X.Y.Z
    ```
+   The published name is `nggorpc` (see `frontend/projects/client/package.json`).
+   `@nggorpc/client` is only the local tsconfig path alias used inside this repo — a
+   rollback aimed at that name unpublishes nothing while the bad version stays live.
    Note: npm unpublish has time restrictions (24 hours)
 
 3. **Mark GitHub release as pre-release or delete it**

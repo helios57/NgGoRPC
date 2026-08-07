@@ -35,7 +35,25 @@ NgGoRPC implements a lightweight binary framing protocol on top of WebSockets. T
 
 ## Project Status
 
-This project is currently in the development phase, as outlined in the [CONCEPT.md](CONCEPT.md) document.
+Released and published to npm as [`nggorpc`](https://www.npmjs.com/package/nggorpc). CI runs Go
+unit tests, Angular unit tests behind an 80% line-coverage gate, and a Playwright end-to-end suite
+against the Dockerised demo stack on every push. The design rationale lives in
+[CONCEPT.md](CONCEPT.md); the wire format is specified in [PROTOCOL.md](PROTOCOL.md).
+
+## Repository Layout
+
+| Path | What it is |
+|---|---|
+| `proto/` | the `.proto` contracts — the single source of truth for both sides |
+| `wsgrpc/` | the Go server library (published as `github.com/helios57/NgGoRPC/wsgrpc`) |
+| `frontend/projects/client/` | the Angular client library (published to npm as `nggorpc`) |
+| `frontend/projects/demo-app/` | the demo application the E2E suite drives |
+| `example/server/` | a runnable Go server used by the demo and the E2E suite |
+| `e2e-tests/` | the Playwright suite |
+
+> Inside this repo the client library is imported as `@nggorpc/client`. That is a **tsconfig path
+> alias** (`frontend/tsconfig.json`), not the published name — external consumers install and import
+> `nggorpc`.
 
 ---
 
@@ -43,14 +61,14 @@ This project is currently in the development phase, as outlined in the [CONCEPT.
 
 ### Prerequisites
 
-**For the TypeScript Client (`nggorpc-client`):**
+**For the TypeScript client (`frontend/projects/client`):**
 - Node.js 18+ and npm
-- Angular 14+ (peer dependency)
+- Angular 14+ (peer dependency; this repo builds against Angular 22)
 - Protocol Buffers compiler (`protoc`)
 - `ts-proto` plugin for TypeScript code generation
 
-**For the Go Server (`wsgrpc`):**
-- Go 1.25+
+**For the Go server (`wsgrpc`):**
+- Go 1.26+
 - Protocol Buffers compiler (`protoc`)
 - `protoc-gen-go` and `protoc-gen-go-grpc` plugins
 
@@ -61,8 +79,9 @@ Install the protoc plugins:
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-# Install TypeScript plugin (via npm in the nggorpc-client directory)
-cd nggorpc-client
+# ts-proto is a devDependency of the frontend workspace, so installing it
+# also installs the protoc-gen-ts_proto plugin binary into node_modules/.bin
+cd frontend
 npm install
 ```
 
@@ -80,10 +99,11 @@ npm i nggorpc --save
 
 The package is published at: https://www.npmjs.com/package/nggorpc
 
-Or install from a local build artifact:
+Or install from a local build artifact (`npm pack` in `frontend/dist/client` produces
+`nggorpc-<version>.tgz`):
 
 ```bash
-npm install ./path/to/nggorpc-client-1.0.0.tgz
+npm install ./path/to/nggorpc-1.1.3.tgz
 ```
 
 ### Installing the Go Server Library
@@ -112,42 +132,37 @@ go mod download
 
 ### TypeScript Client Library
 
-The `nggorpc-client` library provides the Angular integration for gRPC over WebSocket.
+`frontend/projects/client` provides the Angular integration for gRPC over WebSocket. All commands
+below run from `frontend/`.
 
 **1. Generate TypeScript code from `.proto` files:**
 
 ```bash
-cd nggorpc-client
-npm run protoc
+npm run proto:generate
 ```
 
-This runs `scripts/protoc.sh` which generates TypeScript interfaces and service definitions in `src/generated/` using `ts-proto` with RxJS Observable support.
+This runs `ts-proto` over `../proto/greeter.proto` and writes the generated messages and service
+definitions to `projects/demo-app/src/app/generated/`. Only the demo needs generated code — the
+client library itself is contract-agnostic and works with any `ts-proto` output.
 
 **2. Build the library:**
 
 ```bash
-npm run build
+npm run build:lib
 ```
 
-This compiles TypeScript to JavaScript and generates type definitions in the `dist/` directory.
+`ng-packagr` compiles the library to `frontend/dist/client`, including type definitions.
 
 **3. Package for deployment:**
 
 ```bash
+cd dist/client
 npm pack
 ```
 
-This creates a `.tgz` file that can be installed in Angular applications or published to npm:
-
-```bash
-npm publish --access public
-```
-
-**4. Clean build artifacts:**
-
-```bash
-npm run clean
-```
+This creates `nggorpc-<version>.tgz`, installable in Angular applications or publishable to npm.
+Releases are published automatically by CI on a `v*` tag — see [RELEASE.md](RELEASE.md); publishing
+by hand is the exception, not the workflow.
 
 ---
 
@@ -207,20 +222,20 @@ The server will start on `localhost:8080`.
 
 ### TypeScript Client Tests
 
-**Unit Tests:**
+**Unit Tests** (Karma + Jasmine, headless Chrome):
 
 ```bash
-cd nggorpc-client
-npm test
+cd frontend
+npm test                # single run, headless
+npm run test:watch      # re-run on change, for the dev loop
+npm run test:coverage   # single run + coverage/client/
 ```
 
-Currently, the test framework needs to be configured. The following test types should be implemented:
+Coverage is a release gate: CI fails the build if total line coverage drops below **80%** (see the
+"Check coverage threshold" step in `.github/workflows/ci.yml`).
 
-- **Frame Codec Tests** (`frame.spec.ts`): Test encoding/decoding of binary frames with DataView
-- **Client Lifecycle Tests** (`client.spec.ts`): Test Observable lifecycle, including unsubscribe behavior that sends RST_STREAM
-- **Backoff Logic Tests**: Test reconnection with exponential backoff using RxJS TestScheduler
-
-**Recommended test framework:** Jasmine or Jest with RxJS marble testing.
+The suite covers frame encoding/decoding, client lifecycle including the RST_STREAM sent on
+unsubscribe, reconnection backoff, and the typed transport layer.
 
 ---
 
@@ -239,45 +254,51 @@ Run with verbose output:
 go test -v ./...
 ```
 
-Run with coverage:
+Run with coverage, the way CI does (generated code is excluded from the coverage denominator):
 
 ```bash
-go test -cover ./...
+go test -race -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v '/generated')
+go tool cover -func=coverage.out
 ```
 
-Tests should cover:
-
-- **Frame Encoding/Decoding** (`frame_test.go`): Verify binary frame format matches specification
-- **Stream ID Management**: Test that server accepts client-initiated (odd) Stream IDs
-- **Header Parsing**: Test metadata extraction from HEADERS frames
-- **Concurrency**: Test multiplexed stream handling
+The suite covers binary frame encoding/decoding against the format in [PROTOCOL.md](PROTOCOL.md),
+client-initiated (odd) stream IDs, metadata extraction from HEADERS frames, and multiplexed
+concurrent stream handling. Run it with `-race`: the server multiplexes streams across goroutines,
+so a data race is the failure mode most likely to survive a non-race run.
 
 ---
 
 ## End-to-End Testing
 
-E2E tests verify the complete integration between the Angular client and Go server.
+E2E tests verify the complete integration between the Angular client and Go server, using
+**Playwright** against the Dockerised demo stack.
 
-**Setup:**
-
-1. Start the example Go server:
+**Run the whole thing — build the stack, test, tear it down:**
 
 ```bash
-cd example/server
-go run main.go
+cd e2e-tests
+npm install
+npm run test:e2e
 ```
 
-2. Configure an Angular application to use the `nggorpc-client` library and point it to `ws://localhost:8080`
+**Or drive the stack yourself:**
 
-**Test Scenarios**:
+```bash
+docker compose up -d --build     # backend on :8080, demo frontend on :8352
+cd e2e-tests && npx playwright test
+docker compose down
+```
 
-- **Unary Call**: Send request, verify response, check stream closes
-- **Server Streaming**: Verify client receives all messages, UI remains responsive
-- **Client Cancellation**: Unsubscribe during streaming, verify server receives RST_STREAM
-- **Network Interruption**: Simulate disconnect, verify automatic reconnection
-- **Large Payload**: Test with 3MB+ payloads to verify frame size limits
+`BASE_URL` defaults to the compose frontend; override it to point the suite elsewhere.
 
-**Recommended E2E framework:** Cypress or Playwright for browser automation.
+**Covered scenarios**: unary calls, server streaming, concurrent multiplexed streams, client
+cancellation via unsubscribe (asserting the server sees RST_STREAM), automatic reconnection after a
+network interruption, large metadata, large payloads against the frame-size limit, and resource
+exhaustion.
+
+> The network-resilience specs simulate outages by shelling out to `docker stop/start
+> nggorpc-backend`. The Playwright runner therefore has to sit **outside** the compose network with
+> access to the Docker socket — which is why E2E is not itself a compose service.
 
 ---
 
@@ -294,25 +315,12 @@ CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o server main.go
 
 **2. Docker deployment (recommended):**
 
-Create a `Dockerfile`:
-
-```dockerfile
-FROM golang:1.25-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o server example/server/main.go
-
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-COPY --from=builder /app/server /server
-EXPOSE 8080
-CMD ["/server"]
-```
-
-Build and run:
+This repo already ships a multi-stage build for the example server at
+[`example/Dockerfile`](example/Dockerfile) — copy it as your starting point rather than writing one
+from scratch. Build and run it directly:
 
 ```bash
-docker build -t nggorpc-server .
+docker build -t nggorpc-server -f example/Dockerfile .
 docker run -p 8080:8080 nggorpc-server
 ```
 
@@ -327,29 +335,46 @@ For production, use `wss://` (WebSocket Secure). Configure your server with TLS 
 **1. Install the library in your Angular project:**
 
 ```bash
-npm install @nggorpc/client
+npm i nggorpc
 ```
 
 Or from a local build:
 
 ```bash
-npm install ../path/to/nggorpc-client/nggorpc-client-1.0.0.tgz
+npm install ../path/to/NgGoRPC/frontend/dist/client/nggorpc-1.1.3.tgz
 ```
 
 **2. Configure the client:**
 
+The idiomatic way is the provider — it registers a single client for the application injector:
+
 ```typescript
-import { NgGoRpcClient, NgGoRpcConfig } from '@nggorpc/client';
+import { provideNgGoRpc } from 'nggorpc';
 
-const config: NgGoRpcConfig = {
-  pingInterval: 30000,        // 30s keep-alive
-  baseReconnectDelay: 1000,   // 1s initial retry delay
-  maxReconnectDelay: 30000,   // 30s max retry delay
-  maxFrameSize: 4194304       // 4MB max frame size
-};
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideNgGoRpc({
+      pingInterval: 30000,        // 30s keep-alive
+      baseReconnectDelay: 1000,   // 1s initial retry delay
+      maxReconnectDelay: 30000,   // 30s max retry delay
+      maxFrameSize: 4194304       // 4MB max frame size
+    })
+  ]
+});
+```
 
-// In your Angular module or component
-const client = new NgGoRpcClient('wss://your-server.com/rpc', config);
+Constructing one by hand works too. Note that the URL is **not** a constructor argument — the
+constructor takes the `NgZone` used to keep high-frequency stream events out of change detection,
+and the connection is opened separately so that reconnection can be enabled per call site:
+
+```typescript
+import { NgGoRpcClient, NgGoRpcConfig, WebSocketRpcTransport } from 'nggorpc';
+
+const config: NgGoRpcConfig = { pingInterval: 30000 };
+const client = new NgGoRpcClient(inject(NgZone), config);
+client.connect('wss://your-server.com/ws', true); // true = auto-reconnect
+
+const transport = new WebSocketRpcTransport(client);
 ```
 
 **3. Build your Angular app:**
@@ -369,7 +394,7 @@ Deploy the `dist/` directory to your web server, CDN, or hosting platform (e.g.,
 **Typical development cycle:**
 
 1. **Define your API**: Edit `.proto` files in the `proto/` directory
-2. **Generate code**: Run `npm run protoc` (client) and `bash scripts/protoc.sh` (server)
+2. **Generate code**: Run `npm run proto:generate` in `frontend/` and `bash scripts/protoc.sh` in `wsgrpc/`
 3. **Implement handlers**: Write gRPC service implementations in Go
 4. **Build**: Compile both libraries
 5. **Test**: Run unit tests and E2E tests

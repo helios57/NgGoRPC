@@ -22,25 +22,11 @@ services:
       backend:
         condition: service_started
 
-#  e2e:
-#    build:
-#      context: ./e2e-tests
-#      dockerfile: Dockerfile
-#    container_name: nggorpc-e2e
-#    networks:
-#      - nggorpc-network
-#    environment:
-#      - BASE_URL=http://frontend:80
-#      - CI=true
-#    depends_on:
-#      frontend:
-#        condition: service_started
-#      backend:
-#        condition: service_started
-#    volumes:
-#      - ./e2e-tests/tests:/app/tests
-#      - ./e2e-tests/playwright.config.ts:/app/playwright.config.ts
-#      - /var/run/docker.sock:/var/run/docker.sock
+# E2E is deliberately NOT a compose service. CI runs Playwright from the official
+# mcr.microsoft.com/playwright image against the services published here (see the
+# "Run E2E tests" step in .github/workflows/ci.yml). The network-resilience specs
+# shell out to `docker stop/start nggorpc-backend`, so the runner must sit outside
+# the compose network, not inside it.
 
 networks:
   nggorpc-network:

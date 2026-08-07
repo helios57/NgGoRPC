@@ -174,7 +174,7 @@ jobs:
       working-directory: ./e2e-tests
       run: |
         # Run Playwright inside the official image (Chromium + all OS deps baked in,
-        # version-matched to @playwright/test@1.57.0). This deliberately avoids
+        # version-matched to @playwright/test@1.61.1). This deliberately avoids
         # `npx playwright install` on the host: its browser download reliably hangs
         # after reaching 100% (post-download extraction never returns), which used to
         # hold the runner for the full 6h job limit.

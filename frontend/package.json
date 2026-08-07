@@ -7,17 +7,16 @@
     "prebuild": "ng build client",
     "build": "ng build demo-app",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test client",
-    "test:client": "ng test client",
+    "test": "ng test client --no-watch --browsers=ChromeHeadless",
+    "test:watch": "ng test client",
     "test:coverage": "ng test client --no-watch --browsers=ChromeHeadless --code-coverage",
     "build:lib": "ng build client",
     "build:demo": "ng build demo-app",
     "lint": "ng lint",
-    "proto:generate": "protoc --plugin=protoc-gen-ts_proto=.\\node_modules\\.bin\\protoc-gen-ts_proto.cmd --ts_proto_out=./projects/demo-app/src/app/generated --ts_proto_opt=outputServices=generic-definitions,useExactTypes=false --proto_path=../proto ../proto/greeter.proto"
+    "proto:generate": "protoc --plugin=protoc-gen-ts_proto=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./projects/demo-app/src/app/generated --ts_proto_opt=outputServices=generic-definitions,useExactTypes=false --proto_path=../proto ../proto/greeter.proto"
   },
   "private": true,
   "dependencies": {
-    "@angular/animations": "^22.0.4",
     "@angular/common": "^22.0.4",
     "@angular/compiler": "^22.0.4",
     "@angular/core": "^22.0.4",
@@ -25,7 +24,6 @@
     "@angular/platform-browser": "^22.0.4",
     "@angular/platform-browser-dynamic": "^22.0.4",
     "@angular/router": "^22.0.4",
-    "@standard-schema/spec": "^1.1.0",
     "rxjs": "^7.8.2",
     "tslib": "^2.8.1"
   },
@@ -46,7 +44,6 @@
     "@typescript-eslint/parser": "^8.62.0",
     "angular-eslint": "^22.0.0",
     "eslint": "^10.6.0",
-    "istanbul-lib-instrument": "^6.0.3",
     "jasmine-core": "^6.3.0",
     "karma": "^6.4.4",
     "karma-chrome-launcher": "^3.2.0",
