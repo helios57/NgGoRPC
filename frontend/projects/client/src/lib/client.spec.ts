@@ -321,6 +321,66 @@ describe('NgGoRpcClient', () => {
     });
   });
 
+  describe('Client streaming (PROTOCOL.md 6.3)', () => {
+    beforeEach(() => {
+      client.connect('ws://localhost:8080');
+      mockSocket.onopen(new Event('open'));
+      sentMessages.length = 0;
+    });
+
+    it('sends one DATA frame per message, EOS on the LAST one only', () => {
+      const messages = [
+        new Uint8Array([1]),
+        new Uint8Array([2, 2]),
+        new Uint8Array([3, 3, 3]),
+      ];
+
+      client.requestClientStream('test.Service', 'Upload', messages).subscribe();
+
+      const frames = sentMessages.map((m) => decodeFrame(m.buffer));
+      expect(frames.length).toBe(4); // HEADERS + 3 DATA
+      expect(frames[0].flags & FrameFlags.HEADERS).toBeTruthy();
+      expect(frames[0].flags & FrameFlags.EOS).toBeFalsy();
+
+      const dataFrames = frames.slice(1);
+      dataFrames.forEach((f, i) => {
+        expect(f.flags & FrameFlags.DATA).withContext(`frame ${i} is DATA`).toBeTruthy();
+        expect(Array.from(f.payload)).toEqual(Array.from(messages[i]));
+        expect(f.streamId).toBe(frames[0].streamId);
+      });
+
+      // The half-close is the whole point: without EOS on the last frame the
+      // server's RecvMsg loop never returns io.EOF and the upload hangs; with
+      // EOS on an earlier frame the remaining chunks arrive after half-close.
+      expect(dataFrames[0].flags & FrameFlags.EOS).toBeFalsy();
+      expect(dataFrames[1].flags & FrameFlags.EOS).toBeFalsy();
+      expect(dataFrames[2].flags & FrameFlags.EOS).toBeTruthy();
+    });
+
+    it('rejects an empty message list instead of sending a frameless stream', (done) => {
+      client.requestClientStream('test.Service', 'Upload', []).subscribe({
+        next: () => done.fail('expected an error, got a response'),
+        error: (err: Error) => {
+          expect(err.message).toContain('at least one message');
+          expect(sentMessages.length).toBe(0);
+          done();
+        },
+      });
+    });
+
+    it('NEGATIVE CONTROL: request() still emits exactly one DATA|EOS frame', () => {
+      // If this ever reads as several frames, the unary path has been dragged
+      // into the streaming one and every existing caller changed behaviour.
+      client.request('test.Service', 'TestMethod', new Uint8Array([1, 2, 3])).subscribe();
+
+      const frames = sentMessages.map((m) => decodeFrame(m.buffer));
+      expect(frames.length).toBe(2);
+      expect(frames[0].flags & FrameFlags.HEADERS).toBeTruthy();
+      expect(frames[1].flags & FrameFlags.DATA).toBeTruthy();
+      expect(frames[1].flags & FrameFlags.EOS).toBeTruthy();
+    });
+  });
+
   describe('PONG Watchdog', () => {
     it('should close socket when PONG timeout occurs', () => {
       client.connect('ws://localhost:8080');

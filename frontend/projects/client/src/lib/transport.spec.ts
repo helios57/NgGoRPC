@@ -68,6 +68,14 @@ const mockServiceDef: ServiceDefinition = {
       responseStream: true,
       options: {},
     } as MethodDescriptor<TestTick, TestTick>,
+    uploadThings: {
+      name: 'UploadThings',
+      requestType: mockRequestType,
+      requestStream: true,
+      responseType: mockResponseType,
+      responseStream: false,
+      options: {},
+    } as MethodDescriptor<TestRequest, TestResponse>,
   }
 };
 
@@ -76,8 +84,14 @@ describe('WebSocketRpcTransport', () => {
   let transport: WebSocketRpcTransport;
 
   beforeEach(() => {
-    mockClient = jasmine.createSpyObj('NgGoRpcClient', ['request']);
+    mockClient = jasmine.createSpyObj('NgGoRpcClient', ['request', 'requestClientStream']);
     transport = new WebSocketRpcTransport(mockClient);
+    // The mock message types are module-level singletons, so their spies keep
+    // counting across specs. Without this reset a toHaveBeenCalledTimes()
+    // assertion measures the whole file and its number depends on spec order.
+    [mockRequestType, mockResponseType, mockTickType].forEach((type) => {
+      Object.values(type).forEach((spy) => (spy as jasmine.Spy).calls.reset());
+    });
   });
 
   it('should create instance', () => {
@@ -114,6 +128,82 @@ describe('WebSocketRpcTransport', () => {
           done();
         }
       });
+    });
+  });
+
+  describe('clientStream (typed API)', () => {
+    it('should encode EVERY message and pass them to requestClientStream in order', (done) => {
+      const messages: TestRequest[] = [{ name: 'header' }, { name: 'chunk-1' }, { name: 'chunk-2' }];
+      const encodedResponse = new Uint8Array([9, 9, 9]);
+      const decodedResponse: TestResponse = { message: 'stored' };
+
+      // A distinct encoding per message, so a transport that only sent the first
+      // one (the defect this API exists to fix) cannot pass this test.
+      (mockRequestType.encode as jasmine.Spy).and.callFake((m: TestRequest) => ({
+        finish: () => new TextEncoder().encode(m.name),
+      }));
+      (mockResponseType.decode as jasmine.Spy).and.returnValue(decodedResponse);
+      mockClient.requestClientStream.and.returnValue(of(encodedResponse));
+
+      transport.clientStream(
+        mockServiceDef,
+        mockServiceDef.methods['uploadThings'],
+        messages,
+        { authorization: 'Bearer t' }
+      ).subscribe({
+        next: (response) => {
+          expect(mockRequestType.encode).toHaveBeenCalledTimes(3);
+          const args = mockClient.requestClientStream.calls.mostRecent().args;
+          expect(args[0]).toBe('test.TestService');
+          expect(args[1]).toBe('UploadThings');
+          const sent = args[2] as Uint8Array[];
+          expect(sent.length).toBe(3);
+          expect(new TextDecoder().decode(sent[0])).toBe('header');
+          expect(new TextDecoder().decode(sent[1])).toBe('chunk-1');
+          expect(new TextDecoder().decode(sent[2])).toBe('chunk-2');
+          expect(args[3]).toEqual({ authorization: 'Bearer t' });
+          expect(response).toEqual(decodedResponse);
+          done();
+        },
+        error: done.fail,
+      });
+    });
+
+    it('should REFUSE a unary method — the mirror of the request() guard', () => {
+      expect(() => transport.clientStream(
+        mockServiceDef,
+        mockServiceDef.methods['sayHello'],
+        [{ name: 'World' }]
+      )).toThrowError(/is not client-streaming/);
+      expect(mockClient.requestClientStream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('request() refuses a client-streaming method', () => {
+    // Calibration: this is exactly the call that used to succeed and produce a
+    // one-message half-closed stream the server rejected at the application
+    // layer. If this stops throwing, the original defect is reachable again.
+    it('should throw rather than send one DATA|EOS frame', () => {
+      expect(() => transport.request(
+        mockServiceDef,
+        mockServiceDef.methods['uploadThings'],
+        { name: 'header-only' }
+      )).toThrowError(/is client-streaming: use clientStream\(\)/);
+      expect(mockClient.request).not.toHaveBeenCalled();
+    });
+
+    it('should still send a unary method normally (negative control)', (done) => {
+      (mockRequestType.encode as jasmine.Spy).and.returnValue({ finish: () => new Uint8Array([1]) });
+      (mockResponseType.decode as jasmine.Spy).and.returnValue({ message: 'ok' });
+      mockClient.request.and.returnValue(of(new Uint8Array([2])));
+      transport.request(mockServiceDef, mockServiceDef.methods['sayHello'], { name: 'World' })
+        .subscribe({
+          next: () => {
+            expect(mockClient.request).toHaveBeenCalled();
+            done();
+          },
+          error: done.fail,
+        });
     });
   });
 

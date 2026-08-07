@@ -385,6 +385,209 @@ func TestStreamIsolation(t *testing.T) {
 	t.Log("Stream isolation test passed: data on different streams remained isolated")
 }
 
+// waitForFullRecvBuffer blocks until streamID's recvChan is full, i.e. the
+// connection's single read pump is parked on its next send. Polling the real
+// buffer is what makes TestRejectedClientStreamDoesNotWedgeConnection
+// deterministic: without it the test races the map-delete in sendTrailers,
+// which drops late frames harmlessly and hides the wedge.
+func waitForFullRecvBuffer(t *testing.T, server *Server, streamID uint32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.RLock()
+		conns := make([]*wsConnection, 0, len(server.connections))
+		for c := range server.connections {
+			conns = append(conns, c)
+		}
+		server.mu.RUnlock()
+
+		for _, c := range conns {
+			c.mu.Lock()
+			st, ok := c.streamMap[streamID]
+			c.mu.Unlock()
+			if ok && len(st.recvChan) == cap(st.recvChan) {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("stream %d's receive buffer never filled: the test did not reach the state it exists to test", streamID)
+}
+
+// TestRejectedClientStreamDoesNotWedgeConnection pins the deadlock that
+// client-streaming makes reachable.
+//
+// recvChan is buffered at 10 and the connection has ONE read pump. A
+// client-streaming handler that rejects an upload after inspecting its header —
+// the ordinary case: wrong MIME, over-size, unauthorised — returns while the
+// client is still pushing chunks, and a 5 MiB upload in 64 KiB chunks is 80 DATA
+// frames. Once the buffer is full the pump parks on a channel nobody will drain
+// again, and EVERY other multiplexed stream on that socket dies with it.
+//
+// The sequencing is deliberate and not decorative. The handler is held open
+// until the buffer is measurably FULL, so the pump is parked while the stream is
+// still registered. Let the handler return first instead and sendTrailers
+// removes the stream from the map, later frames log "stream not found" and are
+// dropped, and the bug does not reproduce — that race is why an earlier version
+// of this test passed against the unfixed server.
+//
+// Calibration (2026-08-07): reverting EITHER half of the fix — the select on
+// stream.ctx.Done() in the read pump, or the stream.cancel() in handleStream's
+// cleanup that makes that Done fire — turns this red on the "second stream got
+// no response" branch. The rejected upload's trailers still arrive in both
+// failure modes, which is exactly what makes the bug easy to miss in the wild.
+func TestRejectedClientStreamDoesNotWedgeConnection(t *testing.T) {
+	server := NewServer(ServerOption{
+		InsecureSkipVerify: true,
+		MaxPayloadSize:     4 * 1024 * 1024,
+		IdleTimeout:        5 * time.Minute,
+		IdleCheckInterval:  1 * time.Minute,
+	})
+
+	gotHeader := make(chan struct{})
+	release := make(chan struct{})
+
+	desc := &grpc.ServiceDesc{
+		ServiceName: "greeter.Greeter",
+		HandlerType: (*interface{})(nil),
+		Methods:     []grpc.MethodDesc{},
+		Streams: []grpc.StreamDesc{
+			{
+				// Reads the header message and rejects the upload — but only once
+				// the test has confirmed the pump is parked, so the rejection and
+				// the parked pump overlap the way they do under a real upload.
+				StreamName: "RejectingUpload",
+				Handler: func(_ interface{}, stream grpc.ServerStream) error {
+					var req pb.HelloRequest
+					if err := stream.RecvMsg(&req); err != nil {
+						return err
+					}
+					close(gotHeader)
+					<-release
+					return fmt.Errorf("upload rejected after header: %s", req.GetName())
+				},
+				ClientStreams: true,
+			},
+			{
+				StreamName: "StreamGreet",
+				Handler: func(_ interface{}, stream grpc.ServerStream) error {
+					var req pb.HelloRequest
+					if err := stream.RecvMsg(&req); err != nil {
+						return err
+					}
+					return stream.SendMsg(&pb.HelloResponse{Message: "Hello, " + req.GetName()})
+				},
+				ServerStreams: true,
+				ClientStreams: true,
+			},
+		},
+	}
+	server.RegisterService(desc, nil)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(server.HandleWebSocket))
+	defer httpServer.Close()
+
+	ctx := context.Background()
+	conn, _, err := websocket.Dial(ctx, "ws"+httpServer.URL[4:], nil)
+	if err != nil {
+		t.Fatalf("Failed to dial WebSocket: %v", err)
+	}
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+			t.Logf("Failed to close connection: %v", err)
+		}
+	}()
+
+	writeCtx, cancelWrite := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelWrite()
+
+	const uploadID = uint32(1)
+	if err := conn.Write(writeCtx, websocket.MessageBinary,
+		encodeFrame(uploadID, FlagHEADERS, []byte("path: /greeter.Greeter/RejectingUpload\n"))); err != nil {
+		t.Fatalf("Failed to send HEADERS for the upload: %v", err)
+	}
+	header, err := proto.Marshal(&pb.HelloRequest{Name: "attachment.png"})
+	if err != nil {
+		t.Fatalf("Failed to marshal header message: %v", err)
+	}
+	if err := conn.Write(writeCtx, websocket.MessageBinary, encodeFrame(uploadID, FlagDATA, header)); err != nil {
+		t.Fatalf("Failed to send the header DATA frame: %v", err)
+	}
+	<-gotHeader
+
+	// Well past the buffer of 10, and no EOS: the client believes it is still
+	// uploading.
+	chunk, err := proto.Marshal(&pb.HelloRequest{Name: "chunk"})
+	if err != nil {
+		t.Fatalf("Failed to marshal chunk message: %v", err)
+	}
+	for i := 0; i < 40; i++ {
+		if err := conn.Write(writeCtx, websocket.MessageBinary, encodeFrame(uploadID, FlagDATA, chunk)); err != nil {
+			t.Fatalf("Failed to send chunk %d: %v", i, err)
+		}
+	}
+	waitForFullRecvBuffer(t, server, uploadID)
+
+	// Now let the handler reject. The pump is parked on a buffer that nobody
+	// will ever drain again.
+	close(release)
+
+	// The whole point: a DIFFERENT stream on the SAME socket must still work.
+	const greetID = uint32(3)
+	if err := conn.Write(writeCtx, websocket.MessageBinary,
+		encodeFrame(greetID, FlagHEADERS, []byte("path: /greeter.Greeter/StreamGreet\n"))); err != nil {
+		t.Fatalf("Failed to send HEADERS for the greet stream: %v", err)
+	}
+	greet, err := proto.Marshal(&pb.HelloRequest{Name: "Bob"})
+	if err != nil {
+		t.Fatalf("Failed to marshal greet request: %v", err)
+	}
+	if err := conn.Write(writeCtx, websocket.MessageBinary, encodeFrame(greetID, FlagDATA|FlagEOS, greet)); err != nil {
+		t.Fatalf("Failed to send DATA for the greet stream: %v", err)
+	}
+
+	readCtx, cancelRead := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelRead()
+
+	sawRejection, sawGreeting := false, false
+	for !sawGreeting {
+		msgType, frameData, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+		if msgType != websocket.MessageBinary {
+			continue
+		}
+		frame, err := decodeFrame(frameData, 4*1024*1024)
+		if err != nil {
+			t.Fatalf("Failed to decode response frame: %v", err)
+		}
+		if frame.StreamID == uploadID && frame.Flags&FlagTRAILERS != 0 {
+			sawRejection = true
+			continue
+		}
+		if frame.StreamID == greetID && frame.Flags&FlagDATA != 0 {
+			var resp pb.HelloResponse
+			if err := proto.Unmarshal(frame.Payload, &resp); err != nil {
+				t.Fatalf("Failed to unmarshal greeting: %v", err)
+			}
+			if resp.GetMessage() != "Hello, Bob" {
+				t.Errorf("Greeting stream returned %q, want %q", resp.GetMessage(), "Hello, Bob")
+			}
+			sawGreeting = true
+		}
+	}
+
+	if !sawRejection {
+		t.Error("The rejected upload never produced trailers — the handler did not run as expected, " +
+			"so this test did not exercise what it claims to")
+	}
+	if !sawGreeting {
+		t.Fatal("Second stream got no response: the connection read pump is wedged on the " +
+			"abandoned upload's recvChan — every multiplexed stream on this socket is dead")
+	}
+}
+
 // TestGracefulShutdown verifies that Server.Shutdown sends RST_STREAM to active streams
 // and waits for connections to close gracefully
 func TestGracefulShutdown(t *testing.T) {

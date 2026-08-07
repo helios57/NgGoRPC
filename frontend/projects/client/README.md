@@ -88,7 +88,7 @@ export class UserComponent {
       console.log('User:', response);
     });
 
-    // Streaming call
+    // Server-streaming call
     this.transport.request(
       MyServiceDefinition,
       MyServiceDefinition.methods.streamEvents,
@@ -98,6 +98,16 @@ export class UserComponent {
       error: err => console.error('Error:', err),
       complete: () => console.log('Stream closed')
     });
+
+    // Client-streaming call: every message is sent as its own DATA frame and the
+    // last one carries EOS (the half-close the server's RecvMsg loop waits for).
+    // request() REFUSES a client-streaming method rather than sending a single
+    // frame the server would reject at the application layer.
+    this.transport.clientStream(
+      MyServiceDefinition,
+      MyServiceDefinition.methods.uploadFile,
+      [{ header: { name: 'a.png' } }, { chunk: firstChunk }, { chunk: secondChunk }]
+    ).subscribe(summary => console.log('Uploaded:', summary));
   }
 }
 ```

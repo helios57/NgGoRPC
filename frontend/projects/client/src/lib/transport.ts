@@ -82,6 +82,19 @@ export class WebSocketRpcTransport {
     data?: TRequest,
     metadata?: Record<string, string>
   ): Observable<TResponse> {
+    // A client-streaming method sent through here reaches the server as a
+    // single DATA|EOS frame — a syntactically valid stream carrying one message
+    // and then half-close. The server rejects it at the APPLICATION layer
+    // ("chunk before header", "no body"), so the mistake surfaces as a puzzling
+    // per-RPC error rather than as a wiring bug, and it shipped twice that way.
+    // Refuse it here, where the method descriptor still says what the method is.
+    if (method.requestStream) {
+      throw new Error(
+        `${service.fullName}/${method.name} is client-streaming: use clientStream(), not request(). ` +
+        'request() emits exactly one DATA|EOS frame, which the server sees as a one-message half-closed stream.'
+      );
+    }
+
     // Encode request data if provided, otherwise use empty message
     let encodedData: Uint8Array;
     if (data !== undefined) {
@@ -96,6 +109,45 @@ export class WebSocketRpcTransport {
     const resp$ = metadata
       ? this.client.request(service.fullName, method.name, encodedData, metadata)
       : this.client.request(service.fullName, method.name, encodedData);
+
+    return resp$.pipe(
+      map((responseData: Uint8Array) => method.responseType.decode(responseData))
+    );
+  }
+
+  /**
+   * Makes a CLIENT-STREAMING RPC using the typed API: every message is encoded
+   * and sent as its own DATA frame, the last one carrying EOS (PROTOCOL.md 6.3).
+   *
+   * The messages are taken as an array rather than a stream because the whole
+   * frame sequence is queued as one unit, so a call issued while the socket is
+   * still connecting is flushed exactly once and in order once it opens. See
+   * NgGoRpcClient.requestClientStream for the full reasoning.
+   *
+   * @param service - The service definition
+   * @param method - The method descriptor; MUST have requestStream === true
+   * @param messages - The request messages, in order. Must be non-empty.
+   * @param metadata - Optional metadata headers (e.g. authorization)
+   * @returns An Observable that emits the decoded response
+   */
+  clientStream<TRequest, TResponse>(
+    service: ServiceDefinition,
+    method: MethodDescriptor<TRequest, TResponse>,
+    messages: readonly TRequest[],
+    metadata?: Record<string, string>
+  ): Observable<TResponse> {
+    // The mirror of the guard in request(): fanning a unary method out over
+    // several DATA frames is just as wrong, and just as invisible on the wire.
+    if (!method.requestStream) {
+      throw new Error(
+        `${service.fullName}/${method.name} is not client-streaming: use request(), not clientStream().`
+      );
+    }
+
+    const encoded = messages.map((message) => method.requestType.encode(message).finish());
+    const resp$ = metadata
+      ? this.client.requestClientStream(service.fullName, method.name, encoded, metadata)
+      : this.client.requestClientStream(service.fullName, method.name, encoded);
 
     return resp$.pipe(
       map((responseData: Uint8Array) => method.responseType.decode(responseData))
