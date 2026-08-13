@@ -103,12 +103,36 @@ type ServerStats struct {
 	// that forwards per method, a non-zero value here means an RPC reached the
 	// edge with no forwarder behind it.
 	StreamsRejectedUnknownMethod uint64
-	// RSTStreamOrphaned counts RST_STREAM frames naming a stream this server no
-	// longer has. A client that tears its socket down with RPCs still in flight
-	// produces one of these per destroyed RPC, so a rising rate here is the
-	// signature of client-side reconnect churn (lernja LERNJ-1218) rather than
-	// of anything wrong on this side.
+	// RSTStreamOrphaned counts RST_STREAM frames naming a stream this server
+	// never completed and no longer holds. A client that tears its socket down
+	// with RPCs still in flight produces one of these per destroyed RPC, so a
+	// rising rate here is the signature of client-side reconnect churn (lernja
+	// LERNJ-1218) rather than of anything wrong on this side.
+	//
+	// The word "never completed" is the whole counter. Until 2026-08-13 this
+	// counted every RST naming an ID absent from streamMap, and normal
+	// completion removes the ID from streamMap too — so a client sending
+	// RST_STREAM as ordinary post-trailers cleanup, which browsers do, moved it
+	// once per COMPLETED RPC. Measured against a live gateway: one passing
+	// 3.5 s request-response test read 13 streams opened, 13 completed, and 12
+	// "orphaned", with no reconnect anywhere in it. It was counting RPC volume
+	// wearing the name of reconnect churn. See RSTStreamAfterCompletion.
 	RSTStreamOrphaned uint64
+	// RSTStreamAfterCompletion counts RST_STREAM frames naming a stream that
+	// already reached its trailers on this connection. This is BENIGN — it is
+	// what a well-behaved client does to release its side of a finished RPC —
+	// and it is broken out rather than dropped for two reasons: it is the
+	// negative control for RSTStreamOrphaned (the two must move on disjoint
+	// inputs, and a deployment where this one is zero while RPCs complete means
+	// the classification is not running), and its ratio to StreamsCompleted
+	// says which client library is on the other end.
+	//
+	// Bounded by design: each connection remembers its last
+	// completedIDMemory stream IDs. A client that lets an RST trail that many
+	// subsequent completions on one socket will have it counted as orphaned
+	// instead — deliberately the conservative direction, and far outside the
+	// millisecond window real clients use.
+	RSTStreamAfterCompletion uint64
 }
 
 // serverStats is the live counter set behind ServerStats. Kept unexported and
@@ -120,6 +144,7 @@ type serverStats struct {
 	streamsRefused               atomic.Uint64
 	streamsRejectedUnknownMethod atomic.Uint64
 	rstStreamOrphaned            atomic.Uint64
+	rstStreamAfterCompletion     atomic.Uint64
 }
 
 // Stats returns a snapshot of this server's process-lifetime transport counters.
@@ -133,6 +158,7 @@ func (s *Server) Stats() ServerStats {
 		StreamsRefused:               s.stats.streamsRefused.Load(),
 		StreamsRejectedUnknownMethod: s.stats.streamsRejectedUnknownMethod.Load(),
 		RSTStreamOrphaned:            s.stats.rstStreamOrphaned.Load(),
+		RSTStreamAfterCompletion:     s.stats.rstStreamAfterCompletion.Load(),
 	}
 }
 
@@ -163,10 +189,50 @@ type wsConnection struct {
 	sendMu     sync.Mutex
 	mu         sync.Mutex
 	streamMap  map[uint32]*WebSocketServerStream
-	server     *Server // Reference to server for accessing options
+	// completedIDs and completedRing remember which stream IDs left streamMap by
+	// COMPLETING rather than by being destroyed, so an RST naming one of them can
+	// be told apart from an RST naming a stream the client lost. Both are guarded
+	// by mu. The ring is a fixed-size FIFO of the same IDs, used only to evict the
+	// oldest entry from the map — no allocation after the first
+	// completedIDMemory completions, and no unbounded growth on a long-lived
+	// connection.
+	completedIDs  map[uint32]struct{}
+	completedRing []uint32
+	completedNext int
+	server        *Server // Reference to server for accessing options
 	// Keep-alive tracking
 	lastPong   time.Time
 	lastPongMu sync.Mutex
+}
+
+// completedIDMemory is how many recently-completed stream IDs a connection
+// remembers so a post-trailers RST_STREAM can be told apart from an RST naming a
+// stream the client destroyed. Sized for the burst, not the session: it only has
+// to cover the streams that can complete between one stream's trailers and its
+// client's RST, which is a round trip. 512 is three orders of magnitude of
+// headroom over that and costs ~6 KB per connection.
+const completedIDMemory = 512
+
+// noteCompleted records that streamID left streamMap by COMPLETING. Caller must
+// hold c.mu — it is called from the same critical section that does the delete,
+// so the two can never be observed apart.
+func (c *wsConnection) noteCompleted(streamID uint32) {
+	if _, dup := c.completedIDs[streamID]; dup {
+		return
+	}
+	if old := c.completedRing[c.completedNext]; old != 0 {
+		delete(c.completedIDs, old)
+	}
+	c.completedRing[c.completedNext] = streamID
+	c.completedNext = (c.completedNext + 1) % len(c.completedRing)
+	c.completedIDs[streamID] = struct{}{}
+}
+
+// didComplete reports whether streamID reached its trailers on this connection
+// recently enough to still be remembered. Caller must hold c.mu.
+func (c *wsConnection) didComplete(streamID uint32) bool {
+	_, ok := c.completedIDs[streamID]
+	return ok
 }
 
 // WebSocketServerStream implements grpc.ServerStream for WebSocket transport
@@ -619,13 +685,15 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 
 	// Create connection state with actor pattern
 	wsConn := &wsConnection{
-		conn:      conn,
-		ctx:       connCtx,
-		cancel:    cancel,
-		sendChan:  make(chan []byte, 100), // Buffered channel to reduce blocking
-		streamMap: make(map[uint32]*WebSocketServerStream),
-		server:    s, // Reference to server for accessing options
-		lastPong:  time.Now(),
+		conn:          conn,
+		ctx:           connCtx,
+		cancel:        cancel,
+		sendChan:      make(chan []byte, 100), // Buffered channel to reduce blocking
+		streamMap:     make(map[uint32]*WebSocketServerStream),
+		completedIDs:  make(map[uint32]struct{}, completedIDMemory),
+		completedRing: make([]uint32, completedIDMemory),
+		server:        s, // Reference to server for accessing options
+		lastPong:      time.Now(),
 	}
 
 	// Register the connection
@@ -918,7 +986,20 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				stream.safeCloseRecvChan()
 				// Remove from stream map
 				delete(wsConn.streamMap, frame.StreamID)
+			} else if wsConn.didComplete(frame.StreamID) {
+				// Benign: the RPC already sent its trailers and the client is
+				// releasing its half. Counted separately from the orphan case
+				// because collapsing the two makes the orphan counter track RPC
+				// VOLUME — measured on a live gateway, one passing
+				// request-response test read 13 completed and 12 "orphaned",
+				// with no reconnect in it.
+				s.stats.rstStreamAfterCompletion.Add(1)
+				if s.options.EnableLogging {
+					log.Printf("[wsgrpc] Stream %d RST_STREAM after completion", frame.StreamID)
+				}
 			} else {
+				// Neither live nor completed here: destroyed by a socket teardown
+				// on the client, or never opened at all.
 				s.stats.rstStreamOrphaned.Add(1)
 				if s.options.EnableLogging {
 					log.Printf("[wsgrpc] Stream %d not found for RST_STREAM frame", frame.StreamID)
@@ -1039,9 +1120,13 @@ func (s *Server) sendTrailers(stream *WebSocketServerStream, statusCode int, sta
 		stream.cancel()
 	}
 
-	// Clean up stream from map
+	// Clean up stream from map, and remember that this ID left the map by
+	// COMPLETING. Both under one lock: an RST arriving between the delete and the
+	// note would otherwise find the ID in neither place and be miscounted as the
+	// reconnect-churn signal, which is the exact defect this records against.
 	stream.conn.mu.Lock()
 	delete(stream.conn.streamMap, stream.streamID)
+	stream.conn.noteCompleted(stream.streamID)
 	stream.conn.mu.Unlock()
 }
 
