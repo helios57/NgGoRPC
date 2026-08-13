@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -67,6 +68,74 @@ type ServerOption struct {
 	EnableLogging bool
 }
 
+// ServerStats is a snapshot of process-lifetime transport counters.
+//
+// WHY THESE EXIST AS COUNTERS AND NOT ONLY AS LOG LINES. Every event below is
+// also printed by the EnableLogging debug prints, and for a while that was the
+// only way to observe them — which meant observing them at all required running
+// a deployment with debug logging on. Measured on lernja's dev gateway
+// 2026-08-13, over an 8m13s window: 20 281 log lines, of which 19 314 (95.2 %)
+// came from behind EnableLogging. That is ~21.6 MB/h, and it collapsed the
+// container's log retention to about EIGHT MINUTES — so the very question the
+// prints were kept on to answer ("how often did this happen over 6 h?") could
+// not be answered from them. A monotonic counter costs one atomic add, is
+// scrapeable, and is retained by the metrics backend for weeks.
+//
+// Counters are monotonic for the life of the process and never reset. Read them
+// with Server.Stats(); take differences to get a rate.
+type ServerStats struct {
+	// ConnectionsAccepted counts WebSocket upgrades that reached frame handling.
+	ConnectionsAccepted uint64
+	// StreamsOpened counts HEADERS frames that reached a registered method and
+	// got a stream registered on the connection. A HEADERS frame that is
+	// refused, or that names a method this server does not serve, is NOT
+	// counted here — it is counted by StreamsRefused or
+	// StreamsRejectedUnknownMethod respectively, so the three are disjoint.
+	StreamsOpened uint64
+	// StreamsCompleted counts streams that reached their trailers.
+	StreamsCompleted uint64
+	// StreamsRefused counts streams rejected by MaxConcurrentStreams.
+	StreamsRefused uint64
+	// StreamsRejectedUnknownMethod counts HEADERS frames naming a method this
+	// server has no handler registered for. This is the only signal that a
+	// client is calling an RPC the server cannot serve: the server answers with
+	// RST_STREAM(REFUSED_STREAM) and nothing else records it. For a gateway
+	// that forwards per method, a non-zero value here means an RPC reached the
+	// edge with no forwarder behind it.
+	StreamsRejectedUnknownMethod uint64
+	// RSTStreamOrphaned counts RST_STREAM frames naming a stream this server no
+	// longer has. A client that tears its socket down with RPCs still in flight
+	// produces one of these per destroyed RPC, so a rising rate here is the
+	// signature of client-side reconnect churn (lernja LERNJ-1218) rather than
+	// of anything wrong on this side.
+	RSTStreamOrphaned uint64
+}
+
+// serverStats is the live counter set behind ServerStats. Kept unexported and
+// separate so ServerStats stays a plain copyable value.
+type serverStats struct {
+	connectionsAccepted          atomic.Uint64
+	streamsOpened                atomic.Uint64
+	streamsCompleted             atomic.Uint64
+	streamsRefused               atomic.Uint64
+	streamsRejectedUnknownMethod atomic.Uint64
+	rstStreamOrphaned            atomic.Uint64
+}
+
+// Stats returns a snapshot of this server's process-lifetime transport counters.
+// Safe to call concurrently. The fields are read independently, so a snapshot
+// taken under load is internally consistent only to within one frame.
+func (s *Server) Stats() ServerStats {
+	return ServerStats{
+		ConnectionsAccepted:          s.stats.connectionsAccepted.Load(),
+		StreamsOpened:                s.stats.streamsOpened.Load(),
+		StreamsCompleted:             s.stats.streamsCompleted.Load(),
+		StreamsRefused:               s.stats.streamsRefused.Load(),
+		StreamsRejectedUnknownMethod: s.stats.streamsRejectedUnknownMethod.Load(),
+		RSTStreamOrphaned:            s.stats.rstStreamOrphaned.Load(),
+	}
+}
+
 // Server represents a WebSocket-based gRPC server
 type Server struct {
 	mu          sync.RWMutex
@@ -74,6 +143,9 @@ type Server struct {
 	options     ServerOption
 	connections map[*wsConnection]struct{} // Track active connections for graceful shutdown
 	shutdown    bool                       // Flag to indicate server is shutting down
+
+	// stats are process-lifetime transport counters; see ServerStats.
+	stats serverStats
 
 	// testConnErrHook, when non-nil, forces handleConnection to return the given error
 	// immediately after connection setup. Used only by tests to exercise the
@@ -514,6 +586,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Add overhead for frame headers (12 bytes) plus some margin
 	conn.SetReadLimit(readLimit + 1024)
 
+	s.stats.connectionsAccepted.Add(1)
 	if s.options.EnableLogging {
 		log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
 	}
@@ -693,6 +766,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			wsConn.mu.Unlock()
 
 			if uint32(streamCount) >= s.options.MaxConcurrentStreams {
+				s.stats.streamsRefused.Add(1)
 				if s.options.EnableLogging {
 					log.Printf("[wsgrpc] Max concurrent streams exceeded (%d). Rejecting stream %d", s.options.MaxConcurrentStreams, frame.StreamID)
 				}
@@ -744,6 +818,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			s.mu.RUnlock()
 
 			if !ok {
+				s.stats.streamsRejectedUnknownMethod.Add(1)
 				if s.options.EnableLogging {
 					log.Printf("[wsgrpc] Method not found: %s", truncateForLog(methodPath))
 				}
@@ -781,6 +856,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 			wsConn.mu.Lock()
 			wsConn.streamMap[frame.StreamID] = stream
 			wsConn.mu.Unlock()
+			s.stats.streamsOpened.Add(1)
 
 			// Spawn handler goroutine
 			go s.handleStream(stream, methodInfo)
@@ -843,6 +919,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *websocket.Conn) err
 				// Remove from stream map
 				delete(wsConn.streamMap, frame.StreamID)
 			} else {
+				s.stats.rstStreamOrphaned.Add(1)
 				if s.options.EnableLogging {
 					log.Printf("[wsgrpc] Stream %d not found for RST_STREAM frame", frame.StreamID)
 				}
@@ -947,6 +1024,7 @@ func (s *Server) sendTrailers(stream *WebSocketServerStream, statusCode int, sta
 		}
 	}
 
+	s.stats.streamsCompleted.Add(1)
 	if s.options.EnableLogging {
 		log.Printf("[wsgrpc] Stream %d completed with status %d: %s", stream.streamID, statusCode, truncateForLog(statusMsg))
 	}
