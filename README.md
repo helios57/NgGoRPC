@@ -28,6 +28,11 @@ It is designed to provide the rich, type-safe developer experience of gRPC witho
 -   **Optimized for Angular**: Integrates seamlessly with Angular's reactive patterns and uses `NgZone` optimizations to prevent UI performance degradation from high-frequency stream updates.
 -   **Seamless Tooling**: Works with the standard Protobuf toolchain (`protoc`, `ts-proto`, `protoc-gen-go-grpc`). Your `.proto` files are your single source of truth.
 -   **Built-in Resilience**: Automatically handles network interruptions with a configurable exponential backoff and retry strategy.
+-   **Observable Without Debug Logging**: The server keeps process-lifetime transport counters
+    (`Server.Stats()`) that are independent of `EnableLogging`, so the events that matter in
+    production — refused streams, unknown methods, orphaned `RST_STREAM`s — can be scraped as
+    metrics instead of being reconstructed from a debug log. See
+    [Server Observability](#server-observability).
 
 ## How It Works
 
@@ -128,6 +133,47 @@ Then run:
 ```bash
 go mod download
 ```
+
+### Server Observability
+
+`Server.Stats()` returns a snapshot of monotonic, process-lifetime transport counters. It is safe to
+call concurrently, costs one atomic load per field, and — this is the point — **does not depend on
+`EnableLogging`**.
+
+```go
+s := srv.Stats()
+transportOrphanedRST.Set(float64(s.RSTStreamOrphaned))   // e.g. a Prometheus gauge
+transportUnknownMethod.Set(float64(s.StreamsRejectedUnknownMethod))
+```
+
+| field | what it counts |
+|---|---|
+| `ConnectionsAccepted` | WebSocket upgrades that reached frame handling |
+| `StreamsOpened` | HEADERS frames that resolved to a registered method and got a stream |
+| `StreamsCompleted` | streams that reached their trailers |
+| `StreamsRefused` | streams rejected by `MaxConcurrentStreams` |
+| `StreamsRejectedUnknownMethod` | HEADERS naming a method this server does not serve |
+| `RSTStreamOrphaned` | `RST_STREAM` for a stream this server no longer has |
+
+The three HEADERS outcomes — opened, refused, unknown-method — are **disjoint**, so
+`StreamsOpened + StreamsRefused + StreamsRejectedUnknownMethod` is the number of HEADERS frames the
+server saw. Take differences between two snapshots to get a rate; the counters never reset.
+
+Two of them answer questions nothing else in the library can:
+
+-   **`StreamsRejectedUnknownMethod`** is the only record that a client called an RPC this server has
+    no handler for. The server answers `RST_STREAM(REFUSED_STREAM)` and moves on. For a gateway that
+    forwards per method, a non-zero value means an RPC reached the edge with no forwarder behind it.
+-   **`RSTStreamOrphaned`** rises when clients tear sockets down with RPCs still in flight — one per
+    destroyed RPC — so it measures *client-side reconnect churn*, not a fault on the server.
+
+**Why these are counters and not just log lines.** Every event above is *also* printed by the
+`EnableLogging` debug prints, which for a while made that flag load-bearing for operations: answering
+"how often does this happen?" meant running production with debug logging on. Measured on a real
+deployment 2026-08-13 over an 8m13s window, 95.2 % of the process's log lines came from behind
+`EnableLogging` — about 21.6 MB/h, which collapsed container-log retention to roughly eight minutes.
+The prints kept on to answer a six-hour question are exactly what made six hours unreadable. Leave
+`EnableLogging` at its default (`false`) in production and scrape `Stats()` instead.
 
 ---
 
