@@ -183,7 +183,31 @@ func TestStatsCountersRecordEventsWithLoggingDisabled(t *testing.T) {
 	waitForStat(t, server, "StreamsCompleted",
 		func(s ServerStats) uint64 { return s.StreamsCompleted }, 1)
 
-	// (4) Nothing in this test exceeded MaxConcurrentStreams, so the refusal
+	// (4) THE NEGATIVE CONTROL for step (1). Same frame, same code path, on a
+	// stream that just reached its trailers instead of one that never existed —
+	// and RSTStreamOrphaned must NOT move.
+	//
+	// This assertion is the one that was missing, and its absence is why the
+	// counter shipped measuring the wrong thing. Step (1) proves the counter can
+	// go UP; nothing proved it stays DOWN when nothing is wrong. Normal
+	// completion also removes the ID from streamMap, so "absent from streamMap"
+	// conflated a destroyed stream with a finished one, and a browser client's
+	// ordinary post-trailers RST moved it once per COMPLETED RPC. Measured on a
+	// live gateway before the fix: one passing 3.5 s request-response test read
+	// opened=13, completed=13, orphaned=12, with no reconnect anywhere in it.
+	if err := conn.Write(ctx, websocket.MessageBinary,
+		encodeFrame(streamID, FlagRST_STREAM, make([]byte, 4))); err != nil {
+		t.Fatalf("Failed to send post-completion RST_STREAM: %v", err)
+	}
+	waitForStat(t, server, "RSTStreamAfterCompletion",
+		func(s ServerStats) uint64 { return s.RSTStreamAfterCompletion }, 1)
+	if got := server.Stats().RSTStreamOrphaned; got != 1 {
+		t.Fatalf("RSTStreamOrphaned = %d after an RST for a COMPLETED stream, want 1 "+
+			"(the one from step 1 and no more): a client releasing a finished RPC is "+
+			"not reconnect churn, and counting it makes the counter track RPC volume", got)
+	}
+
+	// (5) Nothing in this test exceeded MaxConcurrentStreams, so the refusal
 	// counter must have stayed put. A counter that moves on unrelated traffic
 	// is as useless as one that never moves.
 	if got := server.Stats().StreamsRefused; got != 0 {
