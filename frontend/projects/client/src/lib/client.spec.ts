@@ -860,6 +860,16 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
    * reads out of the OFFER. So the two properties under test are (a) the offer is
    * recomputed on every attempt, because the session id rotates and a reconnect
    * must not replay a stale one, and (b) the values never reach a log.
+   *
+   * READ THE MOCK HONESTLY. `FakeWebSocket` does whatever these tests tell it to,
+   * including things no conforming host does. In particular, `openSocket(s, '')`
+   * on a socket that offered — the "server selected nothing" case — is a state a
+   * real browser never produces: it fails the handshake itself instead (measured
+   * 2026-09-05: Chromium 152, ws 8.21.3). The client-side guard for it is defence
+   * in depth for non-conforming runtimes, and the tests that drive it prove the
+   * guard, NOT that browsers reach it. The reachable behaviour — a socket that
+   * closes without ever opening — is asserted here too, and end to end against a
+   * real server in e2e-tests/tests/subprotocol.spec.ts.
    */
   describe('WebSocket subprotocols (config.subprotocols)', () => {
     const CONSTANT = 'lernja.v1';
@@ -952,6 +962,126 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
         .join(' ');
     }
 
+    it('accepts a callback returning a READONLY array (the consumer\'s real signature)', () => {
+      // lernja-web's teamsSessionSubprotocols() is declared
+      // `(): readonly string[] | null`, and tsc 6.0.3 rejects that as
+      // `() => string[] | null` with TS2322. A mutable-only field would compile
+      // here and break at the call site of the one consumer this exists for, so
+      // the type is asserted with a genuinely `readonly` value, not a `string[]`
+      // that merely looks like one.
+      const frozen: readonly string[] = Object.freeze([CONSTANT, sidFor(9)]);
+      const consumerShaped: () => readonly string[] | null = () => frozen;
+
+      spClient = new NgGoRpcClient(zone(), { subprotocols: consumerShaped });
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created[0].args).toEqual(['ws://localhost:8080', [CONSTANT, sidFor(9)]]);
+      // The array handed to the socket is a copy, so a frozen offer is usable and
+      // a later mutation by the caller cannot reach the constructed socket.
+      expect(created[0].args[1]).not.toBe(frozen);
+    });
+
+    it('reports the subprotocol the server selected', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(11)] });
+      expect(spClient.negotiatedSubprotocol()).toBeNull(); // no socket yet
+
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+
+      expect(spClient.negotiatedSubprotocol()).toBe(CONSTANT);
+    });
+
+    it('reports an empty selection on the anonymous path, not null', () => {
+      spClient = new NgGoRpcClient(zone());
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, '');
+
+      // '' distinguishes "connected, nothing negotiated" (normal) from "no socket".
+      expect(spClient.negotiatedSubprotocol()).toBe('');
+    });
+
+    it('reports null while still shaking hands, so \'\' only ever means "negotiated nothing"', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(12)] });
+      spClient.connect('ws://localhost:8080', true);
+
+      // A socket in CONNECTING also has protocol === '', and that is NOT the same
+      // fact as a completed handshake that selected nothing. Returning '' here
+      // would make the informative value unreadable.
+      expect(created[0].socket.readyState).toBe(0);
+      expect(created[0].socket.protocol).toBe('');
+      expect(spClient.negotiatedSubprotocol()).toBeNull();
+
+      openSocket(created[0].socket, CONSTANT);
+      expect(spClient.negotiatedSubprotocol()).toBe(CONSTANT);
+
+      // And null again once the socket is gone. `disconnect()` rather than a bare
+      // close() so no reconnect timer outlives the test.
+      spClient.disconnect();
+      expect(spClient.negotiatedSubprotocol()).toBeNull();
+    });
+
+    it('names the offer as a candidate cause when the handshake dies before it opens', () => {
+      const sid = sidFor(77);
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), {
+        baseReconnectDelay: 50,
+        maxReconnectDelay: 50,
+        subprotocols: () => [CONSTANT, sid],
+      });
+      spClient.connect('ws://localhost:8080', true);
+
+      // What a conforming host actually does when the server selects none of the
+      // offered values: it fails the handshake ITSELF, so `onopen` never runs and
+      // the socket closes having never been open. Measured 2026-09-05 in Chromium
+      // 152 ("Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
+      // received") and in ws 8.21.3 ("Server sent no subprotocol").
+      created[0].socket.onerror!(new Event('error'));
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      const text = loggedText(errorSpy);
+      expect(text).toContain('handshake failed while offering 2 subprotocol(s)');
+      // The count, never the values.
+      expect(text).not.toContain(sid);
+
+      // NOT fatal: this is indistinguishable from an unreachable server, so the
+      // ordinary backed-off retry must still happen.
+      jasmine.clock().tick(60);
+      expect(created.length).toBe(2);
+    });
+
+    it('does not promise a retry when reconnection is off', () => {
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(79)] });
+      spClient.connect('ws://localhost:8080', false);
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      const text = loggedText(errorSpy);
+      expect(text).toContain('handshake failed while offering');
+      expect(text).toContain('Not retrying.');
+      expect(text).not.toContain('Retrying with backoff.');
+    });
+
+    it('says nothing about subprotocols when an ESTABLISHED connection drops', () => {
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), {
+        baseReconnectDelay: 50,
+        maxReconnectDelay: 50,
+        subprotocols: () => [CONSTANT, sidFor(78)],
+      });
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      // Negative control for the message above: a drop after a successful
+      // handshake cannot have been caused by the offer, and a diagnostic that
+      // fires on every disconnect would be noise that trains the eye to skip it.
+      expect(loggedText(errorSpy)).not.toContain('handshake failed while offering');
+      // Calibration for the negative: the drop DID go through the same close path
+      // that would have logged it, so an empty haystack cannot pass this.
+      jasmine.clock().tick(60);
+      expect(created.length).toBe(2);
+    });
+
     it('offers the callback result as the WebSocket subprotocols', () => {
       spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(1)] });
       spClient.connect('ws://localhost:8080', true);
@@ -1041,7 +1171,9 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
         error: (e) => (errored = e),
       });
 
-      // The handshake SUCCEEDS while the server selects nothing.
+      // The mock opens the socket with no selection. A real browser never does
+      // this — it fails the handshake instead (see the describe header) — so
+      // what follows tests the guard, not a state Chromium can reach.
       openSocket(created[0].socket, '');
 
       expect(spClient.isConnected()).toBe(false);

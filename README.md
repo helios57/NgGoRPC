@@ -448,7 +448,7 @@ The browser sends these in `Sec-WebSocket-Protocol`, so the credential never app
 in a response header, or in a cookie — which is what makes this usable from an embedded context
 (an iframe host, a Teams tab) where those are all readable or unavailable.
 
-Three properties are worth knowing:
+Four properties are worth knowing:
 
 -   **It is a function, and it is called on every attempt, reconnects included.** A short-lived
     session id may have rotated by the time a reconnect fires; a value captured once at `connect()`
@@ -456,13 +456,36 @@ Three properties are worth knowing:
     authenticating — appears long after the cause.
 -   **Returning `null` (or `[]`, or omitting the option) offers nothing**, and the connection is
     then identical to one made by a client that never knew about this option.
--   **A server that selects none of the offered subprotocols is a fatal failure, not a retry.**
-    The handshake succeeds in that case and `socket.protocol` is empty, leaving a socket that looks
-    connected and whose every RPC fails authorisation with no signal saying why. NgGoRPC surfaces it
-    on `connectionState$` (`Disconnected`), fails queued requests with `UNAVAILABLE`, logs
-    `server selected no subprotocol`, closes with `4001` and stops. Retrying could not help: the
-    server's answer will not differ on the next attempt. Call `connect()` again once you hold a
-    fresh credential.
+-   **A server that selects none of the offered subprotocols never yields a socket at all.** The
+    host refuses the handshake itself, as WHATWG Fetch requires — measured 2026-09-05 against this
+    repo's demo server: Chromium 152 reports *"Error during WebSocket handshake: Sent non-empty
+    'Sec-WebSocket-Protocol' header but no response was received"*, `ws` 8.21.3 reports *"Server
+    sent no subprotocol"*. So the dangerous state this pattern invites — a socket that looks
+    connected but carries no session — is not reachable from a conforming host. What you get
+    instead is a connection that never establishes, and NgGoRPC treats it like any other failed
+    attempt: it retries with the configured backoff, because from the browser this is
+    **indistinguishable** from an unreachable server or a credential the server rejected
+    (`onerror` carries neither a status code nor a reason). It logs
+    `handshake failed while offering N subprotocol(s)` once per attempt, with the count only, so
+    the cause is at least visible in the console.
+
+    **Deploy the server side first.** A client that starts offering before the server knows the
+    subprotocol will not fall back to an anonymous connection — it will fail to connect at all,
+    and requests issued in the meantime stay queued rather than erroring.
+
+-   NgGoRPC additionally checks, in `onopen`, that the server's selection is one of the values it
+    offered, and fails the connection permanently (state `Disconnected`, queued requests
+    `UNAVAILABLE`, close code `4001`, no reconnect) if it is not. In a conforming host that check
+    can never fire — it is defence in depth for a runtime that does not implement the Fetch rule,
+    where the alternative would be handing you an unauthenticated socket in silence.
+
+Read the negotiated value back with **`negotiatedSubprotocol()`**: it returns the server's
+selection while a socket is open, `''` if the server selected nothing (only possible when you
+offered nothing), and `null` when there is no open socket. The library enforces only the RFC rule
+that the selection is one of the offered values — it does not know which of them is your
+credential, so if it matters that the server echoed the *constant* and not the id, assert that
+yourself. A server echoing the id back would be a credential disclosure, and the client is the only
+party positioned to see it.
 
 The offered values are never logged, whatever `enableLogging` is set to.
 
@@ -549,7 +572,7 @@ NgGoRPC uses standard WebSocket closure codes. Understanding these codes helps d
 | `1012` | Service Restart | Server is restarting | Planned maintenance or deployment |
 | `1013` | Try Again Later | Server overloaded | Rate limiting or resource exhaustion |
 | `4000` | (private) PONG timeout | Client closed the socket itself | No PONG arrived within the keep-alive watchdog; the client reconnects |
-| `4001` | (private) Subprotocol not selected | Client closed the socket itself | The client offered subprotocols and the server selected none of them. **Not** retried — see [Subprotocol authentication](#subprotocol-authentication) |
+| `4001` | (private) Subprotocol not selected | Client closed the socket itself | The socket opened without a selection the client had offered. **Not** retried. Unreachable in a conforming host, which fails the handshake before `onopen` — see [Subprotocol authentication](#subprotocol-authentication) |
 
 **Common scenarios:**
 

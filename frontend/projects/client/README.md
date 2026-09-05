@@ -37,7 +37,7 @@ export interface NgGoRpcConfig {
     /** Enable debug logging (default: false) */
     enableLogging?: boolean;
     /** Returns the WebSocket subprotocols to offer, or null to offer none. */
-    subprotocols?: () => string[] | null;
+    subprotocols?: () => readonly string[] | null;
 }
 ```
 
@@ -48,12 +48,25 @@ plus a short-lived session id it reads out of the offer). Returning `null` — o
 option, which is what almost every consumer does — offers nothing and leaves the connection
 exactly as it was before this option existed.
 
-If the callback offers subprotocols and the server selects **none** of them, the handshake still
-succeeds, but the socket carries no session. NgGoRPC treats that as a fatal connection failure:
-it reports on `connectionState$` (`Disconnected`, never `Reconnecting`), fails queued requests
-with `UNAVAILABLE`, closes with code `4001`, and does **not** retry — a server that will not
-select the subprotocol will not select it on the next attempt either. Call `connect()` again once
-you hold a fresh credential.
+If the callback offers subprotocols and the server selects **none** of them, a conforming host
+fails the handshake itself and the socket never opens — measured 2026-09-05: Chromium 152
+(*"Sent non-empty 'Sec-WebSocket-Protocol' header but no response was received"*) and `ws` 8.21.3
+(*"Server sent no subprotocol"*). NgGoRPC retries that with the configured backoff, because from
+the page it is indistinguishable from an unreachable server or a rejected credential; it logs
+`handshake failed while offering N subprotocol(s)` per attempt (the count, never the values).
+**So deploy the server side first:** a client that offers before the server understands the
+subprotocol does not fall back to anonymous, it fails to connect.
+
+Should a socket nevertheless open with a selection that was not offered — impossible in a
+conforming host, possible in a runtime that skips that step — NgGoRPC fails the connection
+permanently instead of handing back an unauthenticated socket: `connectionState$` goes
+`Disconnected` (never `Reconnecting`), queued requests fail `UNAVAILABLE`, and the socket is
+closed with code `4001`.
+
+`negotiatedSubprotocol()` returns the server's selection while a socket is open, `''` when it
+selected nothing, and `null` when no socket is open. The library enforces only that the selection
+is one of the offered values; if it matters that the server echoed the *constant* and not the
+credential, assert that with this accessor — the client is the only party that can see it.
 
 The offered values are never logged, at any `enableLogging` setting.
 

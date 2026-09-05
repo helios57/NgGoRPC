@@ -66,6 +66,22 @@ type ServerOption struct {
 	StreamInterceptors []grpc.StreamServerInterceptor
 	// EnableLogging enables debug logging (default: false)
 	EnableLogging bool
+	// Subprotocols lists the WebSocket subprotocols this server is willing to
+	// select, in preference order. The first one the client also offers is
+	// selected and echoed back in Sec-WebSocket-Protocol; if the client offers
+	// none of them this server still ACCEPTS the upgrade with no subprotocol
+	// selected (RFC 6455 permits that). Conforming clients do not: measured
+	// 2026-09-05, Chromium 152 and ws 8.21.3 both fail the handshake on their
+	// side when they offered and got nothing back. So a value missing from this
+	// list is not a soft downgrade for those clients — it is a connection they
+	// can never establish. Keep it in step with what clients offer.
+	//
+	// This is the server half of the bearer-token-over-WebSocket pattern: the
+	// client offers a constant plus a credential, the server selects only the
+	// constant, and the credential is read out of the OFFER — see
+	// SubprotocolNegotiationFromContext. Leave it empty to select nothing, which
+	// is the default and the behaviour this server always had.
+	Subprotocols []string
 }
 
 // ServerStats is a snapshot of process-lifetime transport counters.
@@ -575,6 +591,9 @@ func NewServer(opts ...ServerOption) *Server {
 		if o.EnableLogging {
 			merged.EnableLogging = true
 		}
+		if len(o.Subprotocols) > 0 {
+			merged.Subprotocols = o.Subprotocols
+		}
 	}
 
 	return &Server{
@@ -634,6 +653,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: s.options.InsecureSkipVerify,
 		OriginPatterns:     s.options.AllowedOrigins,
+		Subprotocols:       s.options.Subprotocols,
 	})
 	if err != nil {
 		if s.options.EnableLogging {
@@ -654,11 +674,23 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	s.stats.connectionsAccepted.Add(1)
 	if s.options.EnableLogging {
+		// The negotiation is deliberately NOT part of this line. An offered
+		// subprotocol is where the bearer-token-over-WebSocket pattern puts its
+		// credential, so logging the offer would put a live credential in the
+		// server log — the exact leak the pattern exists to avoid.
 		log.Printf("[wsgrpc] WebSocket connection established from %s", r.RemoteAddr)
 	}
 
+	// Carry the negotiation into every RPC on this connection. Handlers need the
+	// OFFER, not just the selection: the credential is in the offer, and the
+	// selection is only the constant that says which contract version won.
+	ctx := withSubprotocolNegotiation(r.Context(), SubprotocolNegotiation{
+		Offered:  OfferedSubprotocols(r.Header),
+		Selected: conn.Subprotocol(),
+	})
+
 	// Start processing frames in a goroutine
-	if err := s.handleConnection(r.Context(), conn); err != nil {
+	if err := s.handleConnection(ctx, conn); err != nil {
 		// Log the full internal detail server-side; never put err.Error() in the
 		// browser-facing close reason (that leaks internal error strings over the wire).
 		log.Printf("[wsgrpc] Connection error (closing with generic reason): %v", err)
