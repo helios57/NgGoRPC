@@ -36,8 +36,26 @@ export interface NgGoRpcConfig {
     maxFrameSize?: number;
     /** Enable debug logging (default: false) */
     enableLogging?: boolean;
+    /** Returns the WebSocket subprotocols to offer, or null to offer none. */
+    subprotocols?: () => string[] | null;
 }
 ```
+
+`subprotocols` is a **function**, not an array, because it is evaluated on every connection
+attempt — reconnects included. That is what lets a caller offer a rotating credential in the
+subprotocol list (the bearer-token-over-WebSocket pattern: a constant the server selects back,
+plus a short-lived session id it reads out of the offer). Returning `null` — or omitting the
+option, which is what almost every consumer does — offers nothing and leaves the connection
+exactly as it was before this option existed.
+
+If the callback offers subprotocols and the server selects **none** of them, the handshake still
+succeeds, but the socket carries no session. NgGoRPC treats that as a fatal connection failure:
+it reports on `connectionState$` (`Disconnected`, never `Reconnecting`), fails queued requests
+with `UNAVAILABLE`, closes with code `4001`, and does **not** retry — a server that will not
+select the subprotocol will not select it on the next attempt either. Call `connect()` again once
+you hold a fresh credential.
+
+The offered values are never logged, at any `enableLogging` setting.
 
 ### 2. Initialization
 

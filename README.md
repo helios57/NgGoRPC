@@ -28,6 +28,11 @@ It is designed to provide the rich, type-safe developer experience of gRPC witho
 -   **Optimized for Angular**: Integrates seamlessly with Angular's reactive patterns and uses `NgZone` optimizations to prevent UI performance degradation from high-frequency stream updates.
 -   **Seamless Tooling**: Works with the standard Protobuf toolchain (`protoc`, `ts-proto`, `protoc-gen-go-grpc`). Your `.proto` files are your single source of truth.
 -   **Built-in Resilience**: Automatically handles network interruptions with a configurable exponential backoff and retry strategy.
+-   **Handshake-time Authentication**: Credentials can be offered as WebSocket subprotocols
+    (`config.subprotocols`) instead of per-request headers, keeping them out of URLs, response
+    headers and cookies. The client re-evaluates the offer on every attempt and refuses to keep a
+    socket the server declined to negotiate. See
+    [Subprotocol authentication](#subprotocol-authentication).
 -   **Observable Without Debug Logging**: The server keeps process-lifetime transport counters
     (`Server.Stats()`) that are independent of `EnableLogging`, so the events that matter in
     production — refused streams, unknown methods, orphaned `RST_STREAM`s — can be scraped as
@@ -426,6 +431,41 @@ client.connect('wss://your-server.com/ws', true); // true = auto-reconnect
 const transport = new WebSocketRpcTransport(client);
 ```
 
+#### Subprotocol authentication
+
+`setAuthToken()` puts the credential in every request's `HEADERS` frame. When the credential must
+instead be presented **at handshake time** — the bearer-token-over-WebSocket pattern, where the
+server authenticates the connection itself — offer it as a WebSocket subprotocol:
+
+```typescript
+provideNgGoRpc({
+  // A constant the server selects back, plus the credential it reads out of the offer.
+  subprotocols: () => (sessionId ? ['myapp.v1', `myapp.sid.${sessionId}`] : null)
+});
+```
+
+The browser sends these in `Sec-WebSocket-Protocol`, so the credential never appears in the URL,
+in a response header, or in a cookie — which is what makes this usable from an embedded context
+(an iframe host, a Teams tab) where those are all readable or unavailable.
+
+Three properties are worth knowing:
+
+-   **It is a function, and it is called on every attempt, reconnects included.** A short-lived
+    session id may have rotated by the time a reconnect fires; a value captured once at `connect()`
+    would keep offering a retired credential, and the symptom — reconnects that silently stop
+    authenticating — appears long after the cause.
+-   **Returning `null` (or `[]`, or omitting the option) offers nothing**, and the connection is
+    then identical to one made by a client that never knew about this option.
+-   **A server that selects none of the offered subprotocols is a fatal failure, not a retry.**
+    The handshake succeeds in that case and `socket.protocol` is empty, leaving a socket that looks
+    connected and whose every RPC fails authorisation with no signal saying why. NgGoRPC surfaces it
+    on `connectionState$` (`Disconnected`), fails queued requests with `UNAVAILABLE`, logs
+    `server selected no subprotocol`, closes with `4001` and stops. Retrying could not help: the
+    server's answer will not differ on the next attempt. Call `connect()` again once you hold a
+    fresh credential.
+
+The offered values are never logged, whatever `enableLogging` is set to.
+
 **3. Build your Angular app:**
 
 ```bash
@@ -508,6 +548,8 @@ NgGoRPC uses standard WebSocket closure codes. Understanding these codes helps d
 | `1011` | Internal Error | Server encountered an error | Unhandled exception in gRPC handler |
 | `1012` | Service Restart | Server is restarting | Planned maintenance or deployment |
 | `1013` | Try Again Later | Server overloaded | Rate limiting or resource exhaustion |
+| `4000` | (private) PONG timeout | Client closed the socket itself | No PONG arrived within the keep-alive watchdog; the client reconnects |
+| `4001` | (private) Subprotocol not selected | Client closed the socket itself | The client offered subprotocols and the server selected none of them. **Not** retried — see [Subprotocol authentication](#subprotocol-authentication) |
 
 **Common scenarios:**
 
