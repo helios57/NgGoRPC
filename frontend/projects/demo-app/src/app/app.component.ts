@@ -1,7 +1,7 @@
 import { Component, NgZone, OnDestroy, OnInit, signal, effect, inject, ChangeDetectionStrategy, model } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
+import { ConnectionState, NgGoRpcClient, WebSocketRpcTransport } from '@nggorpc/client';
 import { Tick, HelloResponse, GreeterDefinition } from './generated/greeter';
 import { Subscription } from 'rxjs';
 
@@ -44,6 +44,34 @@ export class AppComponent implements OnInit, OnDestroy {
   stream2Count = signal<number>(0);
   stream1Active = signal<boolean>(false);
   stream2Active = signal<boolean>(false);
+
+  /**
+   * Subprotocol lab.
+   *
+   * A SECOND client, deliberately separate from the one above: it does not
+   * connect on load, and nothing else in this demo shares it. The e2e suite
+   * (e2e-tests/tests/subprotocol.spec.ts) drives it to exercise the three
+   * outcomes of a WebSocket subprotocol handshake against the real Go server —
+   * the pair being selected, the server selecting nothing, and no offer at all —
+   * none of which a unit test with a mock socket can honestly cover.
+   */
+  spStatus = signal<string>('idle');
+  /** What the server selected: a value, `(none)` for '', `(not connected)` for null. */
+  spNegotiated = signal<string>('(not connected)');
+  /** The offer the callback produced most recently, joined for display. */
+  spLastOffer = signal<string>('-');
+  /** How many times the callback has been evaluated on this page. */
+  spOfferCount = signal<number>(0);
+  /** The result of the one RPC each lab connection issues, or its error. */
+  spRpcResult = signal<string>('-');
+
+  private spClient?: NgGoRpcClient;
+  private spTransport?: WebSocketRpcTransport;
+  private spMode: 'match' | 'unknown' | 'mismatch' | 'none' = 'none';
+  private spSeq = 0;
+  private spStateSubscription?: Subscription;
+  private spRpcSubscription?: Subscription;
+  private spPollInterval?: ReturnType<typeof setInterval>;
 
   // requestSignal examples properties
   signalGreetingName = model<string>('Signal World');
@@ -100,7 +128,111 @@ export class AppComponent implements OnInit, OnDestroy {
     }, 500); // Check every 500ms
   }
 
+  /**
+   * Opens a lab connection in one of the three modes.
+   *
+   * The RPC is issued SYNCHRONOUSLY after connect(), while the socket is still
+   * CONNECTING, so it is always queued rather than sent. That is deliberate: it
+   * makes the RPC outcome a readout of the CONNECTION outcome. On the match path
+   * it must be flushed and answered; on the mismatch path, where no socket ever
+   * opens, it must still be sitting in the queue — which is exactly what a
+   * caller sees when it offers something the server will not select.
+   */
+  spConnect(mode: 'match' | 'unknown' | 'mismatch' | 'none'): void {
+    this.spDisconnect();
+    this.spMode = mode;
+    this.spRpcResult.set('-');
+    this.spNegotiated.set('(not connected)');
+
+    this.spClient = new NgGoRpcClient(this.ngZone, {
+      // Short delays so a retry storm would be visible within a test's patience
+      // rather than hidden behind a 30s backoff.
+      baseReconnectDelay: 500,
+      maxReconnectDelay: 1000,
+      enableLogging: true,
+      subprotocols: () => this.spNextOffer()
+    });
+    this.spTransport = new WebSocketRpcTransport(this.spClient);
+
+    this.spStateSubscription = this.spClient.connectionState$.subscribe((state: ConnectionState) => {
+      this.ngZone.run(() => this.spStatus.set(state));
+    });
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.spClient.connect(`${protocol}//${window.location.host}/ws`, true);
+    this.spCall();
+
+    this.spPollInterval ??= setInterval(() => {
+      this.ngZone.run(() => {
+        const negotiated = this.spClient?.negotiatedSubprotocol() ?? null;
+        this.spNegotiated.set(negotiated === null ? '(not connected)' : negotiated === '' ? '(none)' : negotiated);
+      });
+    }, 200);
+  }
+
+  /** Graceful reconnect — the path that re-evaluates the subprotocol callback. */
+  spReconnect(): void {
+    this.spClient?.reconnect();
+  }
+
+  spDisconnect(): void {
+    this.spRpcSubscription?.unsubscribe();
+    this.spRpcSubscription = undefined;
+    this.spStateSubscription?.unsubscribe();
+    this.spStateSubscription = undefined;
+    if (this.spPollInterval) {
+      clearInterval(this.spPollInterval);
+      this.spPollInterval = undefined;
+    }
+    this.spClient?.disconnect();
+    this.spClient = undefined;
+    this.spTransport = undefined;
+    this.spStatus.set('idle');
+    this.spNegotiated.set('(not connected)');
+  }
+
+  /** One SayHello on the lab connection; the outcome is rendered either way. */
+  private spCall(): void {
+    if (!this.spTransport) {
+      return;
+    }
+    this.spRpcSubscription = this.spTransport.request(
+      GreeterDefinition,
+      GreeterDefinition.methods.sayHello,
+      { name: 'Subprotocol' }
+    ).subscribe({
+      next: (response: HelloResponse) => this.ngZone.run(() => this.spRpcResult.set(response.message)),
+      error: (err: Error) => this.ngZone.run(() => this.spRpcResult.set(`error: ${err.message}`))
+    });
+  }
+
+  /**
+   * The subprotocol callback itself. It mints a NEW id on every evaluation, so a
+   * reconnect that reuses the first offer is visible as a repeated id both here
+   * and in the server's audit — which is the property the whole
+   * function-not-array design exists for.
+   */
+  private spNextOffer(): string[] | null {
+    if (this.spMode === 'none') {
+      return null;
+    }
+    this.spSeq++;
+    // `demo.sid.s<n>` is in the server's session table; `demo.sid.u<n>` is the
+    // same SHAPE and is not. The difference is a lookup on the server, not a
+    // pattern, which is what makes "connected and negotiated" and "credential
+    // valid" two separable outcomes instead of one.
+    const version = this.spMode === 'mismatch' ? 'demo.vX-unsupported' : 'demo.v1';
+    const prefix = this.spMode === 'unknown' ? 'u' : 's';
+    const offer = [version, `demo.sid.${prefix}${this.spSeq}`];
+    this.ngZone.run(() => {
+      this.spOfferCount.set(this.spSeq);
+      this.spLastOffer.set(offer.join(' '));
+    });
+    return offer;
+  }
+
   ngOnDestroy(): void {
+    this.spDisconnect();
     this.stopTicker();
     this.stopStream1();
     this.stopStream2();

@@ -18,6 +18,31 @@ export interface NgGoRpcConfig {
     maxFrameSize?: number;
     /** Enable debug logging (default: false) */
     enableLogging?: boolean;
+    /**
+     * Returns the WebSocket subprotocols to offer, or null to offer none.
+     *
+     * This is a FUNCTION rather than an array because it is evaluated on EVERY
+     * connection attempt, reconnects included. Callers using the
+     * bearer-token-over-WebSocket pattern (a constant plus a short-lived session
+     * id, so the credential never appears in a URL, a header or a cookie) must be
+     * able to hand a freshly-minted pair to each attempt; an array captured once
+     * at `connect()` would keep offering a session id that has since rotated, and
+     * the symptom — reconnects that silently stop authenticating — would surface
+     * long after the code that caused it.
+     *
+     * `null`, `undefined` and `[]` all mean "offer none", which is the default and
+     * leaves the connection exactly as it was before this option existed.
+     *
+     * The returned values are never logged: they may carry a live credential.
+     *
+     * The return type is `readonly string[]` so that a caller whose builder hands
+     * back a frozen or `readonly` array can pass it straight in. A function
+     * returning a plain `string[]` still satisfies this, so the wider type accepts
+     * strictly more callers than a mutable one — measured with tsc 6.0.3: a
+     * `() => readonly string[] | null` is NOT assignable to `() => string[] | null`
+     * (TS2322), while the reverse is fine.
+     */
+    subprotocols?: () => readonly string[] | null;
 }
 
 /**
@@ -55,6 +80,8 @@ export class NgGoRpcClient {
     private authToken: string | null = null;
     private readonly pongTimeout = 5000; // 5 seconds timeout for PONG response
     private readonly enableLogging: boolean;
+    /** See `NgGoRpcConfig.subprotocols`. Undefined = this client offers none. */
+    private readonly subprotocols?: () => readonly string[] | null;
 
     // Connection state tracking
     private readonly _connectionState$ = new BehaviorSubject<ConnectionState>(ConnectionState.Disconnected);
@@ -67,6 +94,7 @@ export class NgGoRpcClient {
         this.maxReconnectDelay = config?.maxReconnectDelay ?? 30000;
         this.maxFrameSize = config?.maxFrameSize ?? 4 * 1024 * 1024; // 4MB
         this.enableLogging = config?.enableLogging ?? false;
+        this.subprotocols = config?.subprotocols;
     }
 
     /**
@@ -103,12 +131,83 @@ export class NgGoRpcClient {
         // Run WebSocket operations outside Angular zone for better performance if NgZone exists
         const runOutside = (fn: () => void) => this.ngZone ? this.ngZone.runOutsideAngular(fn) : fn();
         runOutside(() => {
-            this.socket = new WebSocket(this.currentUrl!);
+            // Resolve the subprotocols for THIS attempt. Deliberately here and not
+            // in `connect()`: see `NgGoRpcConfig.subprotocols` for why a stale offer
+            // is the failure mode this guards against.
+            let offered: readonly string[] | null = null;
+            if (this.subprotocols) {
+                try {
+                    const result = this.subprotocols();
+                    // Normalise `[]` to null so the constructor below is called with
+                    // one argument: `new WebSocket(url, [])` is not the same call as
+                    // `new WebSocket(url)` in every runtime.
+                    offered = result && result.length > 0 ? result : null;
+                } catch (err) {
+                    // Consumer code threw. Falling back to an anonymous socket would
+                    // be a silent credential downgrade, and letting the exception
+                    // escape is worse still: on a reconnect this runs inside a
+                    // setTimeout, where an escaping throw leaves no socket, no
+                    // `onclose` and therefore no further attempt — a permanently
+                    // wedged client with no signal. Fail it the same way a rejected
+                    // negotiation fails. The thrown value is NOT logged: it is
+                    // consumer data and may quote the credential.
+                    const kind = err instanceof Error ? err.name : typeof err;
+                    this.failConnectionFatally(`subprotocols callback threw (${kind})`, null);
+                    return;
+                }
+            }
+
+            // Only pass the second argument when there is something to offer, so the
+            // no-subprotocol path is the identical constructor call it always was.
+            // Whether this attempt ever completed its handshake. Read in `onclose`
+            // to tell "the socket died before it opened" from "an established
+            // connection dropped"; only the former can be caused by the offer.
+            let opened = false;
+
+            const socket = offered
+                // Copied because the DOM signature takes a mutable string[], and
+                // because the offer this attempt made must not change under us if
+                // the caller keeps a reference to the array it returned.
+                ? new WebSocket(this.currentUrl!, [...offered])
+                : new WebSocket(this.currentUrl!);
+            this.socket = socket;
 
             // Set binary type to arraybuffer for efficient binary frame processing
-            this.socket.binaryType = 'arraybuffer';
+            socket.binaryType = 'arraybuffer';
 
-            this.socket.onopen = () => {
+            socket.onopen = () => {
+                opened = true;
+                // DEFENCE IN DEPTH, and measured to be exactly that.
+                //
+                // The invariant is the RFC 6455 one: if we offered, the server's
+                // selection must be one of the values we offered. The dangerous
+                // violation is the server selecting NOTHING — the socket would look
+                // connected, carry no authenticated session, and fail every later RPC
+                // on authorisation with nothing anywhere saying why.
+                //
+                // Both hosts measured on 2026-09-05 against the demo server refuse
+                // that themselves, before `onopen`, as WHATWG Fetch requires:
+                //   Chromium 152 - "Error during WebSocket handshake: Sent non-empty
+                //                   'Sec-WebSocket-Protocol' header but no response
+                //                   was received"
+                //   ws 8.21.3    - "Server sent no subprotocol"
+                // So in a conforming host this branch is UNREACHABLE and the reachable
+                // failure is the one handled in `onclose` below. It is kept because it
+                // costs nothing, because a host that does not implement that step
+                // (a polyfill, an exotic runtime) would otherwise hand the caller an
+                // unauthenticated socket silently, and because a security invariant is
+                // worth asserting where it is cheap. It is NOT the main line: do not
+                // read its unit tests, which drive a mock that deliberately does not
+                // enforce the rule, as evidence about a browser.
+                if (offered && !offered.includes(socket.protocol)) {
+                    this.failConnectionFatally(
+                        socket.protocol === ''
+                            ? 'server selected no subprotocol'
+                            : 'server selected a subprotocol that was not offered',
+                        socket
+                    );
+                    return;
+                }
                 if (this.enableLogging) {
                     console.log('[NgGoRpcClient] WebSocket connection established');
                 }
@@ -122,7 +221,7 @@ export class NgGoRpcClient {
                 this.flushPendingRequests();
             };
 
-            this.socket.onmessage = (event: MessageEvent) => {
+            socket.onmessage = (event: MessageEvent) => {
                 try {
                     // Decode the incoming frame
                     const frame = decodeFrame(event.data as ArrayBuffer);
@@ -248,11 +347,11 @@ export class NgGoRpcClient {
                 }
             };
 
-            this.socket.onerror = (error) => {
+            socket.onerror = (error) => {
                 console.error('[NgGoRpcClient] WebSocket error:', error);
             };
 
-            this.socket.onclose = (event) => {
+            socket.onclose = (event) => {
                 if (this.enableLogging) {
                     console.log('[NgGoRpcClient] WebSocket connection closed:', {
                         code: event.code,
@@ -262,6 +361,27 @@ export class NgGoRpcClient {
                 }
                 this.connected = false;
                 this.socket = null;
+
+                // A socket that closes without ever opening, on an attempt that
+                // offered subprotocols, is the REACHABLE half of negotiation failure:
+                // a conforming host fails the handshake itself when the server selects
+                // none of the offered values, and it reports that as an ordinary error
+                // event carrying neither a status code nor a reason. From here that is
+                // indistinguishable from "the server is down" and from "the server
+                // refused the credential with a 401", so this deliberately does not
+                // classify it — it names the possibilities once per failed attempt so
+                // the cause is visible at all, which is otherwise unfalsifiable from
+                // the console. Only the COUNT is logged; the values may be credentials.
+                if (!opened && offered) {
+                    console.error(
+                        `[NgGoRpcClient] handshake failed while offering ${offered.length} subprotocol(s): ` +
+                        'the server selected none of them, refused the connection, or is unreachable.' +
+                        // Never claim a retry that is not going to happen — the
+                        // reconnect below is conditional, and a log line that
+                        // asserts more than the code does is worse than silence.
+                        (this.reconnectionEnabled ? ' Retrying with backoff.' : ' Not retrying.')
+                    );
+                }
 
                 // Stop keep-alive ping interval
                 this.stopPingInterval();
@@ -290,6 +410,55 @@ export class NgGoRpcClient {
             });
             this.streamMap.clear();
         });
+    }
+
+    /**
+     * Reports a connection failure that a retry cannot fix, and stops reconnecting.
+     *
+     * Used for subprotocol negotiation: a server that will not select the offered
+     * subprotocol will not select it on the next attempt either, so scheduling a
+     * reconnect would be a retry storm against a condition only a fresh `connect()`
+     * (with a new credential) can change. The alternative — staying on a socket that
+     * reports Connected and cannot do anything — is the harder failure to diagnose.
+     *
+     * Nothing new is invented here: it reports on exactly the channels every other
+     * connection failure uses. Active streams get UNAVAILABLE, requests still queued
+     * for a socket that will now never open are failed rather than left waiting, and
+     * `connectionState$` goes Disconnected — never Reconnecting, because nothing is
+     * scheduled.
+     *
+     * @param condition - a CONSTANT description of what went wrong. Never interpolate
+     *                    the offered values or the server's selection into it: both
+     *                    may carry a live credential.
+     * @param socket - the socket of the failing attempt, or null if it was never
+     *                 constructed.
+     */
+    private failConnectionFatally(condition: string, socket: WebSocket | null): void {
+        console.error(`[NgGoRpcClient] ${condition}; abandoning the connection and not reconnecting`);
+
+        this.reconnectionEnabled = false;
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+        }
+        this.stopPingInterval();
+
+        if (socket) {
+            // Null onclose BEFORE close() so the browser's asynchronous close event
+            // cannot re-emit Disconnected (or, worse, schedule a reconnect) after we
+            // have already reported the failure here — the same race `reconnect()`
+            // guards against.
+            socket.onclose = null;
+            socket.close(4001, 'subprotocol not selected');
+            if (this.socket === socket) {
+                this.socket = null;
+            }
+        }
+        this.connected = false;
+
+        this.errorOutActiveStreams();
+        this.rejectPendingRequests(condition);
+        this._connectionState$.next(ConnectionState.Disconnected);
     }
 
     /**
@@ -422,6 +591,30 @@ export class NgGoRpcClient {
      */
     isConnected(): boolean {
         return this.connected;
+    }
+
+    /**
+     * The subprotocol the server selected for the socket that is OPEN right now.
+     *
+     * `null` whenever there is no open socket — no connection yet, still shaking
+     * hands, or disconnected. `''` when the handshake completed and the server
+     * selected nothing, which is the normal, unchanged case for a client that
+     * offered none.
+     *
+     * Deliberately gated on the connection being established: a socket in
+     * CONNECTING also reports `protocol === ''`, and conflating "not negotiated
+     * yet" with "negotiated nothing" would make the one value that carries
+     * information unreadable.
+     *
+     * Exposed because the client is the only party that can observe the server's
+     * selection: a caller offering a constant plus a credential must be able to
+     * assert that what came back is the CONSTANT. A server echoing the credential
+     * token back would be a disclosure, and this accessor is how a caller sees it.
+     * The library itself enforces only the RFC rule (the selection is one of the
+     * offered values); which of them is the credential is the caller's knowledge.
+     */
+    negotiatedSubprotocol(): string | null {
+        return this.connected && this.socket ? this.socket.protocol : null;
     }
 
     /**

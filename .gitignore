@@ -6,6 +6,10 @@ node_modules/
 /e2e-tests/playwright-report/
 /e2e-tests/test-results
 /e2e-tests/test-results.log
+# The e2e job runs the Playwright image with HOME=/work (see ci.yml), so npm
+# drops its cache and logs into the checkout rather than into a real home dir.
+/e2e-tests/.cache/
+/e2e-tests/.npm/
 
 # Go coverage
 /wsgrpc/coverage

@@ -851,4 +851,421 @@ it('should send RST_STREAM with correct stream ID for multiple streams', () => {
       expect((qClient as any).pendingRequests.length).toBe(0);
     });
   });
+
+  /**
+   * config.subprotocols — the WebSocket subprotocol seam.
+   *
+   * The consumer that needs this offers ['lernja.v1', 'lernja.sid.<session-id>']:
+   * a constant the server selects back, plus a short-lived credential the server
+   * reads out of the OFFER. So the two properties under test are (a) the offer is
+   * recomputed on every attempt, because the session id rotates and a reconnect
+   * must not replay a stale one, and (b) the values never reach a log.
+   *
+   * READ THE MOCK HONESTLY. `FakeWebSocket` does whatever these tests tell it to,
+   * including things no conforming host does. In particular, `openSocket(s, '')`
+   * on a socket that offered — the "server selected nothing" case — is a state a
+   * real browser never produces: it fails the handshake itself instead (measured
+   * 2026-09-05: Chromium 152, ws 8.21.3). The client-side guard for it is defence
+   * in depth for non-conforming runtimes, and the tests that drive it prove the
+   * guard, NOT that browsers reach it. The reachable behaviour — a socket that
+   * closes without ever opening — is asserted here too, and end to end against a
+   * real server in e2e-tests/tests/subprotocol.spec.ts.
+   */
+  describe('WebSocket subprotocols (config.subprotocols)', () => {
+    const CONSTANT = 'lernja.v1';
+    const sidFor = (n: number) => `lernja.sid.session-${n}`;
+
+    interface FakeSocket {
+      readyState: number;
+      protocol: string;
+      onopen: ((e: Event) => void) | null;
+      onclose: ((e: CloseEvent) => void) | null;
+      onerror: ((e: Event) => void) | null;
+      onmessage: ((e: MessageEvent) => void) | null;
+      close: jasmine.Spy;
+      send: jasmine.Spy;
+    }
+
+    /** Every socket the client constructed, with the ARGUMENTS it was given. */
+    let created: { socket: FakeSocket; args: unknown[] }[];
+    let spClient: NgGoRpcClient | null;
+
+    function zone(): import('@angular/core').NgZone {
+      return new MockNgZone() as unknown as import('@angular/core').NgZone;
+    }
+
+    beforeEach(() => {
+      created = [];
+      spClient = null;
+      // A plain constructor function (NOT a spy) so each `new WebSocket(...)`
+      // yields a distinct mock, and so the ARGUMENT LIST is captured verbatim —
+      // arity is the thing under test for the anonymous path.
+      function FakeWebSocket(...args: unknown[]) {
+        const s: FakeSocket = {
+          readyState: 0, // CONNECTING, like a real freshly-constructed socket
+          protocol: '', // what a socket reports until the server selects one
+          onopen: null,
+          onclose: null,
+          onerror: null,
+          onmessage: null,
+          close: jasmine.createSpy('close'),
+          send: jasmine.createSpy('send'),
+        };
+        // Faithful to the browser: close() DOES deliver a close event to whatever
+        // handler is still attached. Without this the "no retry storm" assertion
+        // below would pass on a mock that can never schedule a retry in the first
+        // place — a control that evaluates nothing.
+        s.close.and.callFake(() => {
+          s.readyState = 3; // CLOSED
+          if (s.onclose) {
+            s.onclose(new CloseEvent('close'));
+          }
+        });
+        s.send.and.callFake(() => {
+          if (s.readyState !== 1) {
+            throw new DOMException('request cannot be completed in the current state', 'InvalidStateError');
+          }
+        });
+        created.push({ socket: s, args });
+        return s; // returning an object from a constructor makes `new` yield it
+      }
+      (FakeWebSocket as unknown as { OPEN: number }).OPEN = 1;
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
+    });
+
+    afterEach(() => {
+      if (spClient) {
+        spClient.disconnect();
+      }
+    });
+
+    /** Completes the handshake, with `selected` as the server's chosen subprotocol. */
+    function openSocket(s: FakeSocket, selected: string): void {
+      s.readyState = 1; // OPEN
+      s.protocol = selected;
+      s.onopen!(new Event('open'));
+    }
+
+    function loggedText(...spies: jasmine.Spy[]): string {
+      return spies
+        .flatMap((spy) => spy.calls.allArgs().flat())
+        .map((arg) => {
+          if (typeof arg === 'string') {
+            return arg;
+          }
+          try {
+            return JSON.stringify(arg) ?? String(arg);
+          } catch {
+            return String(arg);
+          }
+        })
+        .join(' ');
+    }
+
+    it('accepts a callback returning a READONLY array (the consumer\'s real signature)', () => {
+      // lernja-web's teamsSessionSubprotocols() is declared
+      // `(): readonly string[] | null`, and tsc 6.0.3 rejects that as
+      // `() => string[] | null` with TS2322. A mutable-only field would compile
+      // here and break at the call site of the one consumer this exists for, so
+      // the type is asserted with a genuinely `readonly` value, not a `string[]`
+      // that merely looks like one.
+      const frozen: readonly string[] = Object.freeze([CONSTANT, sidFor(9)]);
+      const consumerShaped: () => readonly string[] | null = () => frozen;
+
+      spClient = new NgGoRpcClient(zone(), { subprotocols: consumerShaped });
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created[0].args).toEqual(['ws://localhost:8080', [CONSTANT, sidFor(9)]]);
+      // The array handed to the socket is a copy, so a frozen offer is usable and
+      // a later mutation by the caller cannot reach the constructed socket.
+      expect(created[0].args[1]).not.toBe(frozen);
+    });
+
+    it('reports the subprotocol the server selected', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(11)] });
+      expect(spClient.negotiatedSubprotocol()).toBeNull(); // no socket yet
+
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+
+      expect(spClient.negotiatedSubprotocol()).toBe(CONSTANT);
+    });
+
+    it('reports an empty selection on the anonymous path, not null', () => {
+      spClient = new NgGoRpcClient(zone());
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, '');
+
+      // '' distinguishes "connected, nothing negotiated" (normal) from "no socket".
+      expect(spClient.negotiatedSubprotocol()).toBe('');
+    });
+
+    it('reports null while still shaking hands, so \'\' only ever means "negotiated nothing"', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(12)] });
+      spClient.connect('ws://localhost:8080', true);
+
+      // A socket in CONNECTING also has protocol === '', and that is NOT the same
+      // fact as a completed handshake that selected nothing. Returning '' here
+      // would make the informative value unreadable.
+      expect(created[0].socket.readyState).toBe(0);
+      expect(created[0].socket.protocol).toBe('');
+      expect(spClient.negotiatedSubprotocol()).toBeNull();
+
+      openSocket(created[0].socket, CONSTANT);
+      expect(spClient.negotiatedSubprotocol()).toBe(CONSTANT);
+
+      // And null again once the socket is gone. `disconnect()` rather than a bare
+      // close() so no reconnect timer outlives the test.
+      spClient.disconnect();
+      expect(spClient.negotiatedSubprotocol()).toBeNull();
+    });
+
+    it('names the offer as a candidate cause when the handshake dies before it opens', () => {
+      const sid = sidFor(77);
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), {
+        baseReconnectDelay: 50,
+        maxReconnectDelay: 50,
+        subprotocols: () => [CONSTANT, sid],
+      });
+      spClient.connect('ws://localhost:8080', true);
+
+      // What a conforming host actually does when the server selects none of the
+      // offered values: it fails the handshake ITSELF, so `onopen` never runs and
+      // the socket closes having never been open. Measured 2026-09-05 in Chromium
+      // 152 ("Sent non-empty 'Sec-WebSocket-Protocol' header but no response was
+      // received") and in ws 8.21.3 ("Server sent no subprotocol").
+      created[0].socket.onerror!(new Event('error'));
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      const text = loggedText(errorSpy);
+      expect(text).toContain('handshake failed while offering 2 subprotocol(s)');
+      // The count, never the values.
+      expect(text).not.toContain(sid);
+
+      // NOT fatal: this is indistinguishable from an unreachable server, so the
+      // ordinary backed-off retry must still happen.
+      jasmine.clock().tick(60);
+      expect(created.length).toBe(2);
+    });
+
+    it('does not promise a retry when reconnection is off', () => {
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(79)] });
+      spClient.connect('ws://localhost:8080', false);
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      const text = loggedText(errorSpy);
+      expect(text).toContain('handshake failed while offering');
+      expect(text).toContain('Not retrying.');
+      expect(text).not.toContain('Retrying with backoff.');
+    });
+
+    it('says nothing about subprotocols when an ESTABLISHED connection drops', () => {
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), {
+        baseReconnectDelay: 50,
+        maxReconnectDelay: 50,
+        subprotocols: () => [CONSTANT, sidFor(78)],
+      });
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+      created[0].socket.onclose!(new CloseEvent('close'));
+
+      // Negative control for the message above: a drop after a successful
+      // handshake cannot have been caused by the offer, and a diagnostic that
+      // fires on every disconnect would be noise that trains the eye to skip it.
+      expect(loggedText(errorSpy)).not.toContain('handshake failed while offering');
+      // Calibration for the negative: the drop DID go through the same close path
+      // that would have logged it, so an empty haystack cannot pass this.
+      jasmine.clock().tick(60);
+      expect(created.length).toBe(2);
+    });
+
+    it('offers the callback result as the WebSocket subprotocols', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(1)] });
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created.length).toBe(1);
+      expect(created[0].args).toEqual(['ws://localhost:8080', [CONSTANT, sidFor(1)]]);
+    });
+
+    it('re-evaluates the callback on EVERY attempt, so a reconnect offers the CURRENT session id', () => {
+      let calls = 0;
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(++calls)] });
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+      expect(created[0].args[1]).toEqual([CONSTANT, sidFor(1)]);
+
+      // The session rotates and the connection drops.
+      created[0].socket.readyState = 3; // CLOSED
+      created[0].socket.onclose!(new CloseEvent('close'));
+      jasmine.clock().tick(5000);
+
+      // The reconnect must offer sidFor(2). Hoisting the evaluation into connect()
+      // — the tempting "compute it once" refactor — leaves sidFor(1) here, which is
+      // a credential the server has already retired.
+      expect(created.length).toBe(2);
+      expect(created[1].args[1]).toEqual([CONSTANT, sidFor(2)]);
+      expect(calls).toBe(2);
+    });
+
+    it('passes NO protocols argument when the option is absent (legacy call, unchanged)', () => {
+      spClient = new NgGoRpcClient(zone());
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created[0].args.length).toBe(1);
+      expect(created[0].args).toEqual(['ws://localhost:8080']);
+    });
+
+    it('passes NO protocols argument when the callback returns null', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => null });
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created[0].args.length).toBe(1);
+    });
+
+    it('passes NO protocols argument when the callback returns an empty array', () => {
+      // `new WebSocket(url, [])` is not universally the same call as
+      // `new WebSocket(url)`, so [] must be normalised away, not forwarded.
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [] });
+      spClient.connect('ws://localhost:8080', true);
+
+      expect(created[0].args.length).toBe(1);
+    });
+
+    it('never logs the offered values, even with enableLogging on', () => {
+      const sid = sidFor(42);
+      const logSpy = spyOn(console, 'log');
+      const warnSpy = spyOn(console, 'warn');
+      const errorSpy = spyOn(console, 'error');
+
+      spClient = new NgGoRpcClient(zone(), { enableLogging: true, subprotocols: () => [CONSTANT, sid] });
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+      spClient.request('test.Service', 'TestMethod', new Uint8Array([1])).subscribe();
+
+      // Calibration, both halves: the credential really WAS offered on this
+      // connection (so the search string is not a straw man), and logging really
+      // did run (so an empty haystack cannot pass this test).
+      expect(created[0].args[1]).toEqual([CONSTANT, sid]);
+      const text = loggedText(logSpy, warnSpy, errorSpy);
+      expect(text).toContain('[NgGoRpcClient]');
+      expect(text).not.toContain(sid);
+      expect(text).not.toContain('lernja.sid.');
+    });
+
+    it('treats a server that selected NO subprotocol as a fatal connection failure', () => {
+      const errorSpy = spyOn(console, 'error');
+      const sid = sidFor(7);
+      const states: string[] = [];
+
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sid] });
+      spClient.connectionState$.subscribe((state) => states.push(state));
+      spClient.connect('ws://localhost:8080', true);
+
+      // A request issued before the socket opened is queued; it must be failed,
+      // not left waiting for a socket that will now never open.
+      let errored: unknown = null;
+      spClient.request('test.Service', 'Blocked', new Uint8Array([1])).subscribe({
+        error: (e) => (errored = e),
+      });
+
+      // The mock opens the socket with no selection. A real browser never does
+      // this — it fails the handshake instead (see the describe header) — so
+      // what follows tests the guard, not a state Chromium can reach.
+      openSocket(created[0].socket, '');
+
+      expect(spClient.isConnected()).toBe(false);
+      expect(states).not.toContain('Connected');
+      expect(states[states.length - 1]).toBe('Disconnected');
+      expect(states).not.toContain('Reconnecting');
+      expect(created[0].socket.close).toHaveBeenCalledWith(4001, 'subprotocol not selected');
+      expect(errored).toEqual(jasmine.objectContaining({ code: 14 })); // UNAVAILABLE
+
+      // Fatal, not a retry storm: no further socket, ever. The mock's close()
+      // really does deliver the close event, so a client that still wanted to
+      // reconnect would have scheduled one here.
+      jasmine.clock().tick(300000);
+      expect(created.length).toBe(1);
+
+      // Both mechanisms that produce that, asserted directly — each alone is
+      // enough, so neither is observable by outcome while the other stands.
+      expect(created[0].socket.onclose).toBeNull(); // detached before close()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((spClient as any).reconnectionEnabled).toBe(false);
+
+      // The diagnosis names the condition and carries no credential.
+      const text = loggedText(errorSpy);
+      expect(text).toContain('server selected no subprotocol');
+      expect(text).not.toContain(sid);
+    });
+
+    it('fails the connection when the server selects a subprotocol that was not offered', () => {
+      const errorSpy = spyOn(console, 'error');
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(8)] });
+      spClient.connect('ws://localhost:8080', true);
+
+      // A real browser fails this handshake itself, so this can only come from a
+      // non-conforming stack — it must still never look Connected.
+      openSocket(created[0].socket, 'something.else');
+
+      expect(spClient.isConnected()).toBe(false);
+      expect(created[0].socket.close).toHaveBeenCalledWith(4001, 'subprotocol not selected');
+      const text = loggedText(errorSpy);
+      expect(text).toContain('not offered');
+      expect(text).not.toContain('something.else'); // the selection is not echoed either
+    });
+
+    it('connects normally when the server selects one of the offered subprotocols', () => {
+      spClient = new NgGoRpcClient(zone(), { subprotocols: () => [CONSTANT, sidFor(3)] });
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, CONSTANT);
+
+      expect(spClient.isConnected()).toBe(true);
+      expect(created[0].socket.close).not.toHaveBeenCalled();
+    });
+
+    it('does NOT check socket.protocol when nothing was offered', () => {
+      // Negative control for the new check: protocol '' is exactly the value that
+      // is fatal when offering, and it must be inert on the anonymous path — which
+      // is what nearly every consumer of this library uses.
+      spClient = new NgGoRpcClient(zone());
+      spClient.connect('ws://localhost:8080', true);
+      openSocket(created[0].socket, '');
+
+      expect(spClient.isConnected()).toBe(true);
+      expect(created[0].socket.close).not.toHaveBeenCalled();
+    });
+
+    it('fails the connection instead of wedging when the callback throws', () => {
+      const errorSpy = spyOn(console, 'error');
+      const states: string[] = [];
+      spClient = new NgGoRpcClient(zone(), {
+        subprotocols: () => {
+          throw new Error('session store unavailable');
+        },
+      });
+      spClient.connectionState$.subscribe((state) => states.push(state));
+
+      // Queued BEFORE the attempt, so the failure has something to fail: after a
+      // fatal failure there is no socket, and a later request would simply queue.
+      let errored: unknown = null;
+      spClient.request('test.Service', 'Blocked', new Uint8Array([1])).subscribe({
+        error: (e) => (errored = e),
+      });
+      expect(() => spClient!.connect('ws://localhost:8080', true)).not.toThrow();
+
+      expect(created.length).toBe(0); // no socket was constructed
+      jasmine.clock().tick(300000);
+      expect(created.length).toBe(0); // and none ever is
+      expect(states).not.toContain('Reconnecting');
+      expect(errored).toEqual(jasmine.objectContaining({ code: 14 })); // UNAVAILABLE
+
+      const text = loggedText(errorSpy);
+      expect(text).toContain('subprotocols callback threw');
+      // The thrown value is consumer data and may quote the credential.
+      expect(text).not.toContain('session store unavailable');
+    });
+  });
 });

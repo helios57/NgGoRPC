@@ -174,5 +174,57 @@
           </div>
         }
       </div>
+
+      <div class="card">
+        <h3>Subprotocol Lab</h3>
+        <p>
+          Opens a second, independent connection that offers WebSocket
+          subprotocols. The server selects <code>demo.v1</code> and never the id:
+          the id travels only in the offer, so it never reaches a URL, a response
+          header or a cookie. Offering something the server will not select makes
+          the browser fail the handshake outright &mdash; the connection never
+          opens, rather than opening without a session. Offering a well-formed id
+          the server does not know connects and negotiates
+          <code>demo.v1</code> anyway, and only the RPC result says the session
+          was not honoured &mdash; which is why &ldquo;it connected&rdquo; is
+          never evidence that a credential was accepted.
+        </p>
+        <div class="button-group">
+          <button id="spConnectMatchBtn" class="start" (click)="spConnect('match')">
+            Connect (offer demo.v1)
+          </button>
+          <button id="spConnectUnknownBtn" class="start" (click)="spConnect('unknown')">
+            Connect (offer an unknown session)
+          </button>
+          <button id="spConnectMismatchBtn" class="stop" (click)="spConnect('mismatch')">
+            Connect (offer unsupported)
+          </button>
+          <button id="spConnectAnonBtn" class="start" (click)="spConnect('none')">
+            Connect (offer nothing)
+          </button>
+          <button id="spReconnectBtn" (click)="spReconnect()">Reconnect</button>
+          <button id="spDisconnectBtn" class="stop" (click)="spDisconnect()">Disconnect</button>
+        </div>
+        <div>
+          <h4>Lab connection state:</h4>
+          <div id="spStatus">{{ spStatus() }}</div>
+        </div>
+        <div>
+          <h4>Server selected:</h4>
+          <div id="spNegotiated">{{ spNegotiated() }}</div>
+        </div>
+        <div>
+          <h4>Last offer made:</h4>
+          <div id="spLastOffer">{{ spLastOffer() }}</div>
+        </div>
+        <div>
+          <h4>Offers evaluated:</h4>
+          <div id="spOfferCount">{{ spOfferCount() }}</div>
+        </div>
+        <div>
+          <h4>Lab RPC result:</h4>
+          <div id="spRpcResult">{{ spRpcResult() }}</div>
+        </div>
+      </div>
     </div>
   </div>
