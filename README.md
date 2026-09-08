@@ -662,4 +662,10 @@ If you experience performance issues during high-frequency streaming:
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
 *For detailed architectural information, see [CONCEPT.md](CONCEPT.md).*
