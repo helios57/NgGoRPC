@@ -506,7 +506,7 @@ Deploy the `dist/` directory to your web server, CDN, or hosting platform (e.g.,
 **Typical development cycle:**
 
 1. **Define your API**: Edit `.proto` files in the `proto/` directory
-2. **Generate code**: Run `npm run proto:generate` in `frontend/` and `bash scripts/protoc.sh` in `wsgrpc/`
+2. **Generate code**: Run `npm run proto:generate` in `frontend/` and `bash wsgrpc/scripts/protoc.sh` from the repo root
 3. **Implement handlers**: Write gRPC service implementations in Go
 4. **Build**: Compile both libraries
 5. **Test**: Run unit tests and E2E tests
